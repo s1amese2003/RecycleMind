@@ -290,17 +290,13 @@ export default {
           targetAmount: this.targetAmount,
           recipe: this.recipeResult.recipe
         };
-        executeProduction(payload).then(() => {
-          this.$notify({
-            title: '成功',
-            message: '生产任务已成功执行！',
-            type: 'success',
-            duration: 2500
-          });
-          // 跳转到生产记录页面
-          this.$router.push('/recycle/production');
-        }).catch(err => {
-          console.error("执行生产失败:", err)
+        executeProduction(payload).then(response => {
+          this.$message.success('生产任务已成功执行！')
+          this.recipeResult = null // 清空结果，准备下一次计算
+          this.$bus.$emit('production-executed')
+        }).catch(error => {
+          this.$message.error('生产执行失败，请重试')
+          console.error('Production execution failed:', error)
         }).finally(() => {
           this.executing = false;
         });

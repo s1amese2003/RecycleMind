@@ -248,6 +248,10 @@ export default {
   },
   created() {
     this.getList()
+    this.$bus.$on('production-executed', this.getList)
+  },
+  beforeDestroy() {
+    this.$bus.$off('production-executed', this.getList)
   },
   methods: {
     getList() {

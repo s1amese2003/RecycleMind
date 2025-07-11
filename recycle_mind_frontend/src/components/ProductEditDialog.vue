@@ -14,11 +14,11 @@
         </el-col>
       </el-row>
       <el-row :gutter="10">
-        <el-col :span="8" v-for="metal in metals" :key="metal.key">
+        <el-col :span="12" v-for="metal in metals" :key="metal.key">
           <el-form-item :label="metal.label">
-            <el-input-number v-model="form[metal.key].min" :precision="3" :step="0.01" :min="0" :max="100" style="width: 110px" placeholder="最小" />
+            <el-input-number v-model="form[metal.key].min" :precision="3" :step="0.01" :min="0" :max="100" placeholder="最小" />
             <span style="margin: 0 4px;">-</span>
-            <el-input-number v-model="form[metal.key].max" :precision="3" :step="0.01" :min="0" :max="100" style="width: 110px" placeholder="最大" />
+            <el-input-number v-model="form[metal.key].max" :precision="3" :step="0.01" :min="0" :max="100" placeholder="最大" />
           </el-form-item>
         </el-col>
       </el-row>
@@ -107,6 +107,6 @@ export default {
   text-align: right;
 }
 .el-input-number {
-  width: 120px !important;
+  width: 130px !important;
 }
 </style>
