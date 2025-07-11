@@ -622,49 +622,86 @@ app.post('/api/recipe/calculate', async (req, res) => {
         }
 
         // 2. 构建线性规划模型
+        
+        // 2.1 识别所有指定元素及"其他"元素
+        const specifiedElements = Object.keys(requirements).filter(el => el !== 'others' && el !== 'total_others');
+        const allElementsInWaste = new Set();
+        wasteMaterials.forEach(m => {
+            const composition = (typeof m.composition === 'string' ? JSON.parse(m.composition) : m.composition) || {};
+            Object.keys(composition).forEach(el => allElementsInWaste.add(el));
+        });
+        const otherElements = [...allElementsInWaste].filter(el => !specifiedElements.includes(el));
+
+        console.log('指定元素:', specifiedElements);
+        console.log('其他元素:', otherElements);
+        
+        // 2.2 初始化模型
         const model = {
             optimize: "cost",
             opType: "min",
             constraints: {
-                // 约束1：所有废料配比之和必须为100%
                 total_percentage: { equal: 1 } 
             },
             variables: {},
         };
 
-        // 动态添加元素含量约束 (重构)
-        for (const el in requirements) {
-            const constraint = {};
+        // 2.3 添加主要元素的约束
+        specifiedElements.forEach(el => {
             const req = requirements[el];
-            if (req.min > 0) {
-                constraint.min = req.min;
+            if (req) {
+                const constraint = {};
+                if (req.min > 0) constraint.min = req.min;
+                if (req.max > 0 && req.max >= req.min) constraint.max = req.max;
+                if (Object.keys(constraint).length > 0) model.constraints[el] = constraint;
             }
-            if (req.max > 0 && req.max >= req.min) {
-                constraint.max = req.max;
-            }
-            if (Object.keys(constraint).length > 0) {
-                model.constraints[el] = constraint;
-            }
-        }
-        
-        // 为每个废料创建变量，并定义其对成本和元素含量的贡献 (重构)
-        wasteMaterials.forEach(material => {
-            const variable = { cost: material.unit_price, total_percentage: 1 };
-            const composition = typeof material.composition === 'string' 
-                ? JSON.parse(material.composition) 
-                : material.composition;
-
-            // 遍历模型中已存在的约束(即, 必须满足的元素要求)
-            for (const el in model.constraints) {
-                if (el !== 'total_percentage') { // 排除我们自己加的总量约束
-                    variable[el] = composition[el] || 0;
-                }
-            }
-            // 使用 "mat_" 前缀避免物料名称与模型关键字冲突
-            model.variables[`mat_${material.id}_${material.name}`] = variable; 
         });
 
+        // 2.4 添加 "其他单个元素" (others) 的约束
+        if (requirements.others && requirements.others.max > 0) {
+            otherElements.forEach(el => {
+                model.constraints[`other_${el}`] = { max: requirements.others.max };
+            });
+        }
+        
+        // 2.5 添加 "其他元素合计" (total_others) 的约束
+        if (requirements.total_others && requirements.total_others.max > 0) {
+            model.constraints.total_others_sum = { max: requirements.total_others.max };
+        }
+
+        // 2.6 为每个废料创建变量及其对各约束的贡献
+        wasteMaterials.forEach(material => {
+            const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
+            const variable = { cost: parseFloat(material.unit_price), total_percentage: 1 };
+            const variableName = `mat_${material.id}`;
+
+            // 为每个变量添加非负约束
+            model.constraints[variableName] = { min: 0 };
+            variable[variableName] = 1;
+
+            // 添加主要元素的贡献
+            specifiedElements.forEach(el => {
+                variable[el] = composition[el] || 0;
+            });
+
+            // 添加 "其他单个元素" 的贡献
+            if (requirements.others && requirements.others.max > 0) {
+                otherElements.forEach(el => {
+                    variable[`other_${el}`] = composition[el] || 0;
+                });
+            }
+
+            // 添加 "其他元素合计" 的贡献
+            if (requirements.total_others && requirements.total_others.max > 0) {
+                const totalOthersInMaterial = otherElements.reduce((sum, el) => sum + (composition[el] || 0), 0);
+                variable.total_others_sum = totalOthersInMaterial;
+            }
+            
+            model.variables[variableName] = variable; 
+        });
+
+
         // 3. 求解
+        console.log("构建的LP模型:", JSON.stringify(model, null, 2));
         const results = solver.Solve(model);
         console.log("求解结果:", results);
 
@@ -675,17 +712,19 @@ app.post('/api/recipe/calculate', async (req, res) => {
                 .filter(key => key.startsWith('mat_'))
                 .map(key => {
                     const percentage = results[key] * 100; // 转换为百分比
-                    const name = key.split('_').slice(2).join('_');
-                    const id = parseInt(key.split('_')[1]);
+                    const id = parseInt(key.substring(4), 10); // from "mat_..."
                     const material = wasteMaterials.find(m => m.id === id);
+                    
+                    if (!material) return null;
+
                     totalCost += (results[key] * material.unit_price);
                     return {
-                        name: name,
+                        name: material.name,
                         percentage: parseFloat(percentage.toFixed(2)),
                         // weight: results[key] //也可以返回权重
                     };
                 })
-                .filter(item => item.percentage > 0); // 只返回配比大于0的原料
+                .filter(item => item && item.percentage > 0); // 只返回配比大于0的原料
 
             res.json({
                 code: 20000,
