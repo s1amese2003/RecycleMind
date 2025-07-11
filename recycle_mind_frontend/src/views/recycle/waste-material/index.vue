@@ -20,6 +20,9 @@
       >
         添加废料
       </el-button>
+      <el-button v-waves :loading="downloadLoading" class="filter-item" type="primary" icon="el-icon-download" @click="handleDownload">
+        导出
+      </el-button>
     </div>
 
     <el-table
@@ -240,6 +243,7 @@ export default {
         amount: 1,
         reason: ''
       },
+      downloadLoading: false,
       rules: {
         name: [{ required: true, message: '请输入废料名称', trigger: 'blur' }],
         storage_area: [{ required: true, message: '请输入存放区域', trigger: 'blur' }]
@@ -389,6 +393,7 @@ export default {
 
     handleStock(row) {
       this.stockForm.id = row.id
+      this.stockForm.reason = ''
       this.stockDialogVisible = true
     },
 
@@ -424,6 +429,41 @@ export default {
           duration: 2000
         })
       })
+    },
+    handleDownload() {
+      this.downloadLoading = true
+      import('@/vendor/Export2Excel').then(excel => {
+        try {
+          const tHeader = ['废料编号', '废料名称', '存放区域', '库存(kg)', '单价(元/kg)', '成分构成']
+          const filterVal = ['id', 'name', 'storage_area', 'stock_kg', 'unit_price', 'composition']
+          const data = this.formatJson(filterVal, this.list)
+          excel.export_json_to_excel({
+            header: tHeader,
+            data,
+            filename: '废料库存'
+          })
+        } catch (error) {
+          console.error('导出 Excel 时出错:', error)
+        } finally {
+          this.downloadLoading = false
+        }
+      }).catch(err => {
+        console.error('加载 Export2Excel 模块失败:', err)
+        this.$message.error('导出功能加载失败，请查看控制台获取更多信息')
+        this.downloadLoading = false
+      })
+    },
+    formatJson(filterVal, jsonData) {
+      return jsonData.map(v => filterVal.map(j => {
+        if (j === 'composition') {
+          if (v[j] && typeof v[j] === 'object') {
+            return Object.entries(v[j]).map(([key, value]) => `${key}: ${value}%`).join(', ')
+          }
+          return ''
+        } else {
+          return v[j]
+        }
+      }))
     }
   }
 }
