@@ -13,9 +13,9 @@
           </div>
           <div class="card-panel-description">
             <div class="card-panel-text">
-              计算次数
+              生产记录
             </div>
-            <count-to :start-val="0" :end-val="5" :duration="2600" class="card-panel-num" />
+            <count-to :start-val="0" :end-val="productionRecordCount" :duration="2600" class="card-panel-num" />
           </div>
         </div>
       </el-col>
@@ -26,9 +26,9 @@
           </div>
           <div class="card-panel-description">
             <div class="card-panel-text">
-              保存配方
+              产品总数
             </div>
-            <count-to :start-val="0" :end-val="5" :duration="3000" class="card-panel-num" />
+            <count-to :start-val="0" :end-val="productCount" :duration="3000" class="card-panel-num" />
           </div>
         </div>
       </el-col>
@@ -39,9 +39,9 @@
           </div>
           <div class="card-panel-description">
             <div class="card-panel-text">
-              原料总数
+              废料件数
             </div>
-            <count-to :start-val="0" :end-val="33" :duration="3200" class="card-panel-num" />
+            <count-to :start-val="0" :end-val="wasteMaterialCount" :duration="3200" class="card-panel-num" />
           </div>
         </div>
       </el-col>
@@ -51,11 +51,37 @@
 
 <script>
 import CountTo from 'vue-count-to'
+import { getProductionRecords } from '@/api/production'
+import { fetchList as fetchProductList } from '@/api/product'
+import { getWasteMaterialList } from '@/api/waste-material'
 
 export default {
   name: 'DashboardAdmin',
   components: {
     CountTo
+  },
+  data() {
+    return {
+      productionRecordCount: 0,
+      productCount: 0,
+      wasteMaterialCount: 0
+    }
+  },
+  created() {
+    this.fetchData()
+  },
+  methods: {
+    fetchData() {
+      getProductionRecords().then(response => {
+        this.productionRecordCount = response.data.total
+      })
+      fetchProductList().then(response => {
+        this.productCount = response.data.total
+      })
+      getWasteMaterialList().then(response => {
+        this.wasteMaterialCount = response.data.total
+      })
+    }
   }
 }
 </script>

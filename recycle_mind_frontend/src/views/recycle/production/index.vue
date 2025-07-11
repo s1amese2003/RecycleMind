@@ -25,6 +25,9 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <pagination v-show="total>0" :total="total" :page.sync="listQuery.page" :limit.sync="listQuery.limit" @pagination="fetchRecords" />
+
     </el-card>
 
     <!-- 生产记录对话框 -->
@@ -66,6 +69,7 @@ import {
   getProductionRecords, addProductionRecord, updateProductionRecord, deleteProductionRecord
 } from '@/api/production'
 import { parseTime } from '@/utils'
+import Pagination from '@/components/Pagination' // secondary package based on el-pagination
 
 // 格式化日期为 YYYY-MM-DD HH:mm:ss
 function formatDateTime(date) {
@@ -77,6 +81,7 @@ function formatDateTime(date) {
 
 export default {
   name: 'ProductionManagement',
+  components: { Pagination },
   filters: {
     parseTime(time, cFormat) {
       if (!time) return ''
@@ -96,7 +101,12 @@ export default {
     return {
       // 生产记录
       recordList: [],
+      total: 0,
       recordListLoading: true,
+      listQuery: {
+        page: 1,
+        limit: 20
+      },
       recordDialogFormVisible: false,
       recordDialogStatus: '',
       recordTextMap: { update: '编辑记录', create: '新增记录' },
@@ -118,8 +128,9 @@ export default {
     // --- 生产记录方法 ---
     fetchRecords() {
       this.recordListLoading = true
-      getProductionRecords().then(response => {
+      getProductionRecords(this.listQuery).then(response => {
         this.recordList = response.data.items
+        this.total = response.data.total
         this.recordListLoading = false
       })
     },
