@@ -708,30 +708,58 @@ app.post('/api/recipe/calculate', async (req, res) => {
         // 4. 处理并返回结果
         if (results.feasible) {
             let totalCost = 0;
+            const finalComposition = {}; // 最终成分
+
             const recipe = Object.keys(results)
                 .filter(key => key.startsWith('mat_'))
                 .map(key => {
-                    const percentage = results[key] * 100; // 转换为百分比
+                    const weight = results[key]; // 这是 solver 算出的权重 (0 to 1)
+                    const percentage = weight * 100; // 转换为百分比
                     const id = parseInt(key.substring(4), 10); // from "mat_..."
                     const material = wasteMaterials.find(m => m.id === id);
                     
                     if (!material) return null;
 
-                    totalCost += (results[key] * material.unit_price);
+                    // 累加计算最终成分
+                    const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
+                    for (const element in composition) {
+                        if (Object.prototype.hasOwnProperty.call(composition, element)) {
+                            if (!finalComposition[element]) {
+                                finalComposition[element] = 0;
+                            }
+                            // 元素在最终成品中的含量 = Σ(废料中的元素含量 * 废料在配方中的权重)
+                            finalComposition[element] += (composition[element] * weight);
+                        }
+                    }
+
+                    const itemCost = weight * material.unit_price;
+                    totalCost += itemCost;
                     return {
                         name: material.name,
+                        storage_area: material.storage_area,
                         percentage: parseFloat(percentage.toFixed(2)),
-                        // weight: results[key] //也可以返回权重
+                        cost: parseFloat(itemCost.toFixed(2)) // 为每种物料添加成本字段
                     };
                 })
                 .filter(item => item && item.percentage > 0); // 只返回配比大于0的原料
 
+            // 格式化最终成分，保留小数点后4位以提高精度
+            const formattedComposition = Object.keys(finalComposition).reduce((acc, key) => {
+                acc[key] = parseFloat(finalComposition[key].toFixed(4));
+                return acc;
+            }, {});
+
+            const responseData = {
+                recipe: recipe,
+                totalCost: parseFloat(totalCost.toFixed(2)),
+                finalComposition: formattedComposition // 将最终成分返回给前端
+            };
+            
+            console.log("发送到前端的配方结果:", JSON.stringify(responseData, null, 2));
+
             res.json({
                 code: 20000,
-                data: {
-                    recipe: recipe,
-                    totalCost: parseFloat(totalCost.toFixed(2))
-                }
+                data: responseData
             });
         } else {
             res.status(500).json({ code: 50002, message: '无法找到满足条件的配方，请检查产品要求或废料库存。' });

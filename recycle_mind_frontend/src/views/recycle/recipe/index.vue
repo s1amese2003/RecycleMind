@@ -105,6 +105,12 @@
                 min-width="150"
               />
               <el-table-column
+                label="存放区域"
+                prop="storage_area"
+                width="120"
+                align="center"
+              />
+              <el-table-column
                 label="配比"
                 width="120"
                 align="center"
@@ -120,6 +126,40 @@
               >
                 <template slot-scope="{row}">
                   {{ ((targetAmount * row.percentage) / 100).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column
+                label="成本(元)"
+                prop="cost"
+                width="120"
+                align="center"
+              >
+                <template slot-scope="{row}">
+                  {{ (row.cost * targetAmount).toFixed(2) }}
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <h4 style="margin-top: 30px; margin-bottom: 10px;">最终成品成分预览</h4>
+            <el-table
+              :data="finalCompositionForTable"
+              border
+              stripe
+              style="width: 100%"
+            >
+              <el-table-column
+                label="元素"
+                prop="name"
+                width="180"
+                align="center"
+              />
+              <el-table-column
+                label="预计含量 (%)"
+                prop="percentage"
+                align="center"
+              >
+                <template slot-scope="{row}">
+                  <span>{{ row.percentage.toFixed(4) }} %</span>
                 </template>
               </el-table-column>
             </el-table>
@@ -167,6 +207,21 @@ export default {
       calculating: false,
       executing: false,
       recipeResult: null
+    }
+  },
+  computed: {
+    finalCompositionForTable() {
+      if (!this.recipeResult || !this.recipeResult.finalComposition) {
+        console.log('finalCompositionForTable: recipeResult.finalComposition 不可用');
+        return []
+      }
+      // 将对象 { Si: 1, Fe: 2 } 转换为数组 [ { name: 'Si', percentage: 1 }, { name: 'Fe', percentage: 2 } ]
+      const tableData = Object.entries(this.recipeResult.finalComposition).map(([name, percentage]) => ({
+        name,
+        percentage
+      })).sort((a, b) => b.percentage - a.percentage) // 按含量降序排序
+      console.log('finalCompositionForTable 已转换数据:', tableData);
+      return tableData;
     }
   },
   activated() {
@@ -225,6 +280,7 @@ export default {
       })
 
       calculateRecipe({ requirements: requirementsPayload }).then(response => {
+        console.log('从后端接收到的配方结果:', JSON.stringify(response.data, null, 2));
         this.recipeResult = response.data
         this.$notify({
           title: '成功',
@@ -247,38 +303,79 @@ export default {
           return;
         }
 
-        let values;
-        // 根据列的索引来决定使用哪种数据进行加总
-        if (index === 1) { // “配比”列
-          values = data.map(item => Number(item.percentage));
-        } else if (index === 2) { // “需要用量”列
-          values = data.map(item => Number((this.targetAmount * item.percentage) / 100));
-        } else {
+        // 新增：跳过“存放区域”列的计算
+        if (column.property === 'storage_area') {
           sums[index] = '';
           return;
         }
 
-        // 执行加总
-        if (!values.every(value => isNaN(value))) {
-          sums[index] = values.reduce((prev, curr) => {
-            const value = Number(curr);
-            return !isNaN(value) ? prev + curr : prev;
-          }, 0);
-
-          // 根据列添加单位
-          if (index === 1) {
-            sums[index] = sums[index].toFixed(2) + ' %';
-          } else if (index === 2) {
-            sums[index] = sums[index].toFixed(2) + ' kg';
+        // 对“配比”列进行求和
+        if (column.property === 'percentage') {
+          const values = data.map(item => Number(item.percentage));
+          if (!values.every(value => isNaN(value))) {
+            const sum = values.reduce((prev, curr) => {
+              const value = Number(curr);
+              if (!isNaN(value)) {
+                return prev + curr;
+              } else {
+                return prev;
+              }
+            }, 0);
+            sums[index] = sum.toFixed(2) + ' %';
+          } else {
+            sums[index] = 'N/A';
           }
-        } else {
-          sums[index] = '';
+          return;
         }
+
+        // 对“需要用量”列进行求和 (通过列标题识别)
+        if (column.label === '需要用量 (kg)') {
+          const values = data.map(item => Number(((this.targetAmount * item.percentage) / 100)));
+          if (!values.every(value => isNaN(value))) {
+            const sum = values.reduce((prev, curr) => {
+              const value = Number(curr);
+              if (!isNaN(value)) {
+                return prev + curr;
+              } else {
+                return prev;
+              }
+            }, 0);
+            sums[index] = sum.toFixed(2) + ' kg';
+          } else {
+            sums[index] = 'N/A';
+          }
+          return;
+        }
+
+        // 对“成本”列进行求和
+        if (column.property === 'cost') {
+          const values = data.map(item => Number(item.cost));
+          if (!values.every(value => isNaN(value))) {
+            const sum = values.reduce((prev, curr) => {
+              const value = Number(curr);
+              if (!isNaN(value)) {
+                return prev + curr;
+              } else {
+                return prev;
+              }
+            }, 0);
+            sums[index] = (sum * this.targetAmount).toFixed(2);
+          } else {
+            sums[index] = 'N/A';
+          }
+          return;
+        }
+
+        sums[index] = '';
       });
 
       return sums;
     },
     handleExecuteProduction() {
+      if (!this.recipeResult || !this.recipeResult.recipe) {
+        this.$message.warning('请先进行配方计算，然后执行生产')
+        return
+      }
       this.$confirm('此操作将从业仓库扣减所需物料，并创建一条生产记录。是否确定执行？', '生产确认', {
         confirmButtonText: '确定执行',
         cancelButtonText: '取消',
