@@ -5,7 +5,7 @@
       <el-button class="filter-item" type="primary" icon="el-icon-search" @click="handleFilter">
         搜索
       </el-button>
-      <el-button class="filter-item" style="margin-left: 10px;" type="primary" icon="el-icon-edit" @click="handleCreate">
+      <el-button v-if="!isApprover" class="filter-item" style="margin-left: 10px;" type="primary" icon="el-icon-edit" @click="handleCreate">
         添加
       </el-button>
     </div>
@@ -26,7 +26,7 @@
           <span>{{ row[metal.key] ? `${row[metal.key].min} - ${row[metal.key].max}` : 'N/A' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" align="center" width="230" class-name="small-padding fixed-width" fixed="right">
+      <el-table-column v-if="!isApprover" label="操作" align="center" width="230" class-name="small-padding fixed-width" fixed="right">
         <template slot-scope="{row,$index}">
           <el-button type="primary" size="mini" @click="handleUpdate(row)">
             编辑
@@ -100,6 +100,11 @@ export default {
         { key: 'others', label: '其他单个 (%)' },
         { key: 'total_others', label: '其他合计 (%)' }
       ]
+    }
+  },
+  computed: {
+    isApprover() {
+      return this.$store.getters.roles.includes('approver')
     }
   },
   created() {

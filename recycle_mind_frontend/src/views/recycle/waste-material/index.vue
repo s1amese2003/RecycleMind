@@ -3,7 +3,7 @@
     <div class="filter-container">
       <el-input
         v-model="listQuery.keyword"
-        placeholder="废料名称/编号"
+        placeholder="废料名称/存放区域"
         style="width: 200px;"
         class="filter-item"
         @keyup.enter.native="handleFilter"
@@ -17,6 +17,7 @@
         type="primary"
         icon="el-icon-plus"
         @click="handleCreate"
+        v-if="!isApprover"
       >
         添加废料
       </el-button>
@@ -54,7 +55,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="单价" width="120px" align="center">
+      <el-table-column label="单价" width="120px" align="center" v-if="!isAdmin && !isApprover">
         <template slot-scope="{row}">
           <span>{{ row.unit_price }} 元/kg</span>
         </template>
@@ -67,7 +68,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="实际单价" width="120px" align="center">
+      <el-table-column label="实际单价" width="120px" align="center" v-if="!isAdmin && !isApprover">
         <template slot-scope="{row}">
           <span v-if="row.actual_unit_price !== null && row.actual_unit_price !== undefined">{{ row.actual_unit_price.toFixed(2) }} 元/kg</span>
           <span v-else>--</span>
@@ -91,13 +92,13 @@
 
       <el-table-column label="操作" align="center" width="230" class-name="small-padding fixed-width">
         <template slot-scope="{row, index}">
-          <el-button type="primary" size="mini" @click="handleUpdate(row)">
+          <el-button type="primary" size="mini" @click="handleUpdate(row)" v-if="!isApprover">
             编辑
           </el-button>
-          <el-button size="mini" type="success" @click="handleStock(row)">
+          <el-button size="mini" type="success" @click="handleStock(row)" v-if="!isApprover">
             库存变更
           </el-button>
-          <el-button size="mini" type="danger" @click="handleDelete(row, index)">
+          <el-button size="mini" type="danger" @click="handleDelete(row, index)" v-if="!isApprover && isSuperAdmin">
             删除
           </el-button>
         </template>
@@ -243,6 +244,18 @@ export default {
         return (unit_price / (yield_rate / 100)).toFixed(2)
       }
       return '0.00'
+    },
+    roles() {
+      return this.$store.getters && this.$store.getters.roles ? this.$store.getters.roles : []
+    },
+    isSuperAdmin() {
+      return this.roles.includes('super_admin')
+    },
+    isAdmin() {
+      return this.roles.includes('admin')
+    },
+    isApprover() {
+      return this.roles.includes('approver')
     }
   },
   data() {
@@ -289,10 +302,7 @@ export default {
   methods: {
     getList() {
       this.listLoading = true
-      getWasteMaterialList({
-        page: this.listQuery.page,
-        limit: this.listQuery.limit
-      }).then(response => {
+      getWasteMaterialList(this.listQuery).then(response => {
         this.list = response.data.items.map(item => {
           if (item.composition && typeof item.composition === 'string') {
             item.composition = JSON.parse(item.composition)

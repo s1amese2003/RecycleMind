@@ -63,6 +63,23 @@
                 </el-row>
               </div>
             </el-form-item>
+
+            <el-form-item label="排除废料（不可选）">
+              <el-select
+                v-model="excludedMaterials"
+                multiple
+                filterable
+                placeholder="可选择一种或多种废料进行排除"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="item in allWasteMaterials"
+                  :key="item.id"
+                  :label="item.name"
+                  :value="item.id"
+                />
+              </el-select>
+            </el-form-item>
           </el-form>
         </el-card>
       </el-col>
@@ -85,6 +102,7 @@
 
           <div v-if="recipeResult && recipeResult.recipe">
             <el-alert
+              v-if="isSuperAdmin"
               :title="'计算成功 - 预计最低成本: ¥' + recipeResult.totalCost.toFixed(2) + ' /kg'"
               type="success"
               show-icon
@@ -129,6 +147,7 @@
                 </template>
               </el-table-column>
               <el-table-column
+                v-if="isSuperAdmin"
                 label="成本(元)"
                 prop="cost"
                 width="120"
@@ -190,6 +209,7 @@
 import { getAllProducts } from '@/api/product'
 import { calculateRecipe } from '@/api/recipe'
 import { executeProduction } from '@/api/production'
+import { getWasteMaterialList } from '@/api/waste-material'
 
 const standardElements = ['Si', 'Fe', 'Cu', 'Mn', 'Mg', 'Cr', 'Zn', 'Ti', 'Ni', 'Zr', 'Sr', 'Na', 'Bi', 'Pb', 'B', 'AL'];
 
@@ -198,6 +218,8 @@ export default {
   data() {
     return {
       products: [],
+      allWasteMaterials: [],
+      excludedMaterials: [],
       selectedProductId: null,
       targetAmount: 1000, // 默认目标产量
       requirement: {
@@ -210,9 +232,11 @@ export default {
     }
   },
   computed: {
+    isSuperAdmin() {
+      return this.$store.getters.roles.includes('super_admin')
+    },
     finalCompositionForTable() {
       if (!this.recipeResult || !this.recipeResult.finalComposition) {
-        console.log('finalCompositionForTable: recipeResult.finalComposition 不可用');
         return []
       }
       // 将对象 { Si: 1, Fe: 2 } 转换为数组 [ { name: 'Si', percentage: 1 }, { name: 'Fe', percentage: 2 } ]
@@ -220,14 +244,22 @@ export default {
         name,
         percentage
       })).sort((a, b) => b.percentage - a.percentage) // 按含量降序排序
-      console.log('finalCompositionForTable 已转换数据:', tableData);
       return tableData;
     }
   },
   activated() {
     this.fetchProducts()
+    this.fetchAllWasteMaterials()
   },
   methods: {
+    fetchAllWasteMaterials() {
+      getWasteMaterialList({ limit: 9999, page: 1 }).then(response => {
+        this.allWasteMaterials = response.data.items
+      }).catch(error => {
+        this.$message.error('获取废料列表失败')
+        console.error(error)
+      })
+    },
     fetchProducts() {
       getAllProducts().then(response => {
         this.products = response.data.items
@@ -256,62 +288,37 @@ export default {
       this.requirement.elements = elements
     },
     handleCalculate() {
-      if (!this.selectedProductId) {
-        this.$message.warning('请先选择一个成品')
-        return
-      }
-      if (!this.targetAmount || this.targetAmount <= 0) {
-        this.$message.warning('请输入一个有效的目标产量')
-        return
-      }
-
       this.calculating = true
-      this.recipeResult = null
-
-      // 将表单的数组结构转换回API需要的对象结构
-      const requirementsPayload = {}
+      const requirementsForApi = {}
       this.requirement.elements.forEach(el => {
-        if (el.name) {
-          requirementsPayload[el.name] = {
-            min: el.min,
-            max: el.max
-          }
+        if (el.min > 0 || el.max > 0) {
+          requirementsForApi[el.name] = { min: el.min, max: el.max }
         }
       })
 
-      calculateRecipe({ requirements: requirementsPayload }).then(response => {
-        console.log('从后端接收到的配方结果:', JSON.stringify(response.data, null, 2));
-        this.recipeResult = response.data
-        this.$notify({
-          title: '成功',
-          message: '配方计算成功!',
-          type: 'success'
+      calculateRecipe({ requirements: requirementsForApi, excluded_ids: this.excludedMaterials })
+        .then(response => {
+          this.recipeResult = response.data
+          this.$message.success('配方计算成功！')
         })
-      }).catch(error => {
-        this.$message.error('计算失败，无法找到满足条件的配方')
-        console.error(error)
-      }).finally(() => {
-        this.calculating = false
-      })
+        .catch(error => {
+          this.$message.error('配方计算失败: ' + (error.response?.data?.message || error.message))
+          this.recipeResult = null
+        })
+        .finally(() => {
+          this.calculating = false
+        })
     },
     getSummaries(param) {
       const { columns, data } = param;
       const sums = [];
       columns.forEach((column, index) => {
         if (index === 0) {
-          sums[index] = '总计';
+          sums[index] = '合计';
           return;
         }
-
-        // 新增：跳过“存放区域”列的计算
-        if (column.property === 'storage_area') {
-          sums[index] = '';
-          return;
-        }
-
-        // 对“配比”列进行求和
         if (column.property === 'percentage') {
-          const values = data.map(item => Number(item.percentage));
+          const values = data.map(item => Number(item[column.property]));
           if (!values.every(value => isNaN(value))) {
             const sum = values.reduce((prev, curr) => {
               const value = Number(curr);
@@ -325,95 +332,69 @@ export default {
           } else {
             sums[index] = 'N/A';
           }
-          return;
         }
-
-        // 对“需要用量”列进行求和 (通过列标题识别)
         if (column.label === '需要用量 (kg)') {
-          const values = data.map(item => Number(((this.targetAmount * item.percentage) / 100)));
-          if (!values.every(value => isNaN(value))) {
-            const sum = values.reduce((prev, curr) => {
-              const value = Number(curr);
-              if (!isNaN(value)) {
-                return prev + curr;
-              } else {
-                return prev;
-              }
-            }, 0);
-            sums[index] = sum.toFixed(2) + ' kg';
-          } else {
-            sums[index] = 'N/A';
-          }
-          return;
+          const totalAmount = data.reduce((prev, curr) => {
+            const amount = (this.targetAmount * curr.percentage) / 100;
+            return prev + amount;
+          }, 0);
+          sums[index] = totalAmount.toFixed(2) + ' kg';
         }
-
-        // 对“成本”列进行求和
-        if (column.property === 'cost') {
-          const values = data.map(item => Number(item.cost));
-          if (!values.every(value => isNaN(value))) {
-            const sum = values.reduce((prev, curr) => {
-              const value = Number(curr);
-              if (!isNaN(value)) {
-                return prev + curr;
-              } else {
-                return prev;
-              }
-            }, 0);
-            sums[index] = (sum * this.targetAmount).toFixed(2);
-          } else {
-            sums[index] = 'N/A';
-          }
-          return;
+        if (column.property === 'cost' && this.isSuperAdmin) {
+           const totalCost = data.reduce((prev, curr) => prev + (curr.cost * this.targetAmount), 0);
+           sums[index] = '¥ ' + totalCost.toFixed(2);
         }
-
-        sums[index] = '';
       });
-
       return sums;
     },
     handleExecuteProduction() {
       if (!this.recipeResult || !this.recipeResult.recipe) {
-        this.$message.warning('请先进行配方计算，然后执行生产')
+        this.$message.error('没有可执行的配方。')
         return
       }
-      this.$confirm('此操作将从业仓库扣减所需物料，并创建一条生产记录。是否确定执行？', '生产确认', {
-        confirmButtonText: '确定执行',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }).then(() => {
-        this.executing = true;
-        const payload = {
-          productName: this.requirement.name,
-          targetAmount: this.targetAmount,
-          recipe: this.recipeResult.recipe
-        };
-        executeProduction(payload).then(response => {
-          this.$message.success('生产任务已成功执行！')
-          this.recipeResult = null // 清空结果，准备下一次计算
-          this.$bus.$emit('production-executed')
-        }).catch(error => {
-          this.$message.error('生产执行失败，请重试')
-          console.error('Production execution failed:', error)
-        }).finally(() => {
+
+      const productionData = {
+        productName: this.requirement.name,
+        targetAmount: this.targetAmount,
+        recipe: this.recipeResult.recipe.map(item => ({
+          name: item.name,
+          percentage: item.percentage
+        }))
+      }
+
+      this.executing = true;
+      executeProduction(productionData)
+        .then(() => {
+          this.$alert('生产任务已成功创建，相关废料库存已扣减。', '生产执行成功', {
+            confirmButtonText: '确定',
+            type: 'success'
+          });
+          this.recipeResult = null; // 清空结果，准备下一次计算
+        })
+        .catch(error => {
+          this.$message.error('生产执行失败: ' + (error.response?.data?.message || error.message))
+        })
+        .finally(() => {
           this.executing = false;
-        });
-      }).catch(() => {
-        this.$message({
-          type: 'info',
-          message: '已取消执行'
-        });
-      });
+        })
     }
   }
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
+.app-container {
+  padding: 20px;
+}
+.box-card {
+  margin-bottom: 20px;
+}
 .element-requirement {
   margin-bottom: 10px;
 }
 .empty-result {
   text-align: center;
-  margin-top: 50px;
+  color: #909399;
+  padding: 40px 0;
 }
 </style>

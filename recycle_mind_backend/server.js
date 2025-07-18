@@ -110,16 +110,39 @@ app.post('/api/user/logout', (req, res) => {
  * GET /api/waste-material/list
  */
 app.get('/api/waste-material/list', async (req, res) => {
-  console.log('接收到获取废料列表的请求');
+  const { keyword, page = 1, limit = 20 } = req.query;
+  console.log('接收到获取废料列表的请求, query:', req.query);
+
   try {
-    const [rows] = await db.query('SELECT * FROM waste_materials ORDER BY id ASC');
+    let whereClause = '';
+    const queryParams = [];
+
+    if (keyword) {
+      whereClause = 'WHERE name LIKE ? OR storage_area LIKE ?';
+      queryParams.push(`%${keyword}%`);
+      queryParams.push(`%${keyword}%`);
+    }
+
+    // Get total count
+    const countQuery = `SELECT COUNT(*) as total FROM waste_materials ${whereClause}`;
+    const [countRows] = await db.query(countQuery, queryParams);
+    const total = countRows[0].total;
+
+    // Get paginated data
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const dataQuery = `SELECT * FROM waste_materials ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`;
+    const dataParams = [...queryParams, parseInt(limit, 10), offset];
+    
+    const [rows] = await db.query(dataQuery, dataParams);
+
     const items = rows.map(item => ({
         ...item,
         stock: item.stock_kg
     }));
+
     res.json({
       code: 20000,
-      data: { items: items, total: items.length }
+      data: { items: items, total: total }
     });
   } catch (error) {
     console.error('获取废料列表 API 查询数据库时出错:', error);
@@ -563,13 +586,26 @@ app.post('/api/users', async (req, res) => {
  */
 app.put('/api/users/:id', async (req, res) => {
   const { id } = req.params;
-  const { role, email, is_active } = req.body;
-  console.log(`接收到修改用户 ${id} 的请求:`, { role, email, is_active });
+  const { username, role, email, is_active } = req.body;
+  console.log(`接收到修改用户 ${id} 的请求:`, { username, role, email, is_active });
 
   try {
+    const fieldsToUpdate = {};
+    if (username !== undefined) fieldsToUpdate.username = username;
+    if (role !== undefined) fieldsToUpdate.role = role;
+    if (email !== undefined) fieldsToUpdate.email = email;
+    if (is_active !== undefined) fieldsToUpdate.is_active = is_active;
+
+    if (Object.keys(fieldsToUpdate).length === 0) {
+      return res.status(400).json({ code: 40002, message: '没有提供任何需要更新的字段。' });
+    }
+
+    const setClause = Object.keys(fieldsToUpdate).map(key => `${key} = ?`).join(', ');
+    const values = [...Object.values(fieldsToUpdate), id];
+
     const [result] = await db.query(
-      'UPDATE users SET role = ?, email = ?, is_active = ? WHERE id = ?',
-      [role, email, is_active, id]
+      `UPDATE users SET ${setClause} WHERE id = ?`,
+      values
     );
 
     if (result.affectedRows === 0) {
@@ -579,7 +615,7 @@ app.put('/api/users/:id', async (req, res) => {
     res.json({ code: 20000, data: 'success' });
   } catch (error) {
      if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ code: 40901, message: '邮箱已存在。' });
+      return res.status(409).json({ code: 40901, message: '用户名或邮箱已存在。' });
     }
     console.error(`修改用户 ${id} API 数据库操作出错:`, error);
     res.status(500).json({ code: 50000, message: '服务器内部错误，修改用户失败。' });
@@ -619,8 +655,8 @@ app.delete('/api/users/:id', async (req, res) => {
  * POST /api/recipe/calculate
  */
 app.post('/api/recipe/calculate', async (req, res) => {
-    const { requirements } = req.body;
-    console.log('接收到配方计算请求:', requirements);
+    const { requirements, excluded_ids } = req.body;
+    console.log('接收到配方计算请求:', { requirements, excluded_ids });
 
     if (!requirements || Object.keys(requirements).length === 0) {
         return res.status(400).json({ code: 40001, message: '产品需求参数不能为空。' });
@@ -628,9 +664,16 @@ app.post('/api/recipe/calculate', async (req, res) => {
 
     try {
         // 1. 从数据库获取所有废料信息
-        const [wasteMaterials] = await db.query('SELECT * FROM waste_materials WHERE stock_kg > 0');
+        let query = 'SELECT * FROM waste_materials WHERE stock_kg > 0';
+        const queryParams = [];
+        if (excluded_ids && excluded_ids.length > 0) {
+          query += ' AND id NOT IN (?)';
+          queryParams.push(excluded_ids);
+        }
+        
+        const [wasteMaterials] = await db.query(query, queryParams);
         if (wasteMaterials.length === 0) {
-            return res.status(500).json({ code: 50001, message: '废料库存为空，无法进行计算。' });
+            return res.status(500).json({ code: 50001, message: '符合条件的废料库存为空，无法进行计算。' });
         }
 
         // 2. 构建线性规划模型

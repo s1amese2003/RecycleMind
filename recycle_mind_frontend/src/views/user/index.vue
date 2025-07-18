@@ -24,12 +24,14 @@
           <span>{{ row.username }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="角色" prop="role" align="center">
+      <el-table-column label="角色" width="150px" align="center">
         <template slot-scope="{row}">
-          <el-tag :type="row.role | roleTagFilter">{{ row.role }}</el-tag>
+          <el-tag :type="row.role === 'super_admin' ? 'danger' : 'info'">
+            {{ roleMap[row.role] || row.role }}
+          </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="邮箱" prop="email" align="center">
+      <el-table-column label="邮箱" min-width="200px" align="center">
         <template slot-scope="{row}">
           <span>{{ row.email }}</span>
         </template>
@@ -60,19 +62,19 @@
 
     <el-dialog :title="textMap[dialogStatus]" :visible.sync="dialogFormVisible">
       <el-form ref="dataForm" :rules="rules" :model="temp" label-position="left" label-width="80px" style="width: 400px; margin-left:50px;">
-        <el-form-item v-if="dialogStatus==='create'" label="用户名" prop="username">
+        <el-form-item v-if="dialogStatus==='create' || isSuperAdmin" label="用户名" prop="username">
           <el-input v-model="temp.username" />
         </el-form-item>
         <el-form-item v-if="dialogStatus==='create'" label="密码" prop="password">
           <el-input v-model="temp.password" type="password" />
         </el-form-item>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="temp.email" />
-        </el-form-item>
         <el-form-item label="角色" prop="role">
           <el-select v-model="temp.role" class="filter-item" placeholder="请选择">
-            <el-option v-for="item in roleOptions" :key="item" :label="item" :value="item" />
+            <el-option v-for="item in roleOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="邮箱" prop="email">
+          <el-input v-model="temp.email" />
         </el-form-item>
         <el-form-item v-if="dialogStatus==='update'" label="状态">
           <el-switch v-model="temp.is_active" :active-value="1" :inactive-value="0" />
@@ -133,13 +135,29 @@ export default {
         update: '编辑用户',
         create: '新增用户'
       },
-      roleOptions: ['admin', 'editor', 'user'],
+      roleOptions: [
+        { label: '超级管理员', value: 'super_admin' },
+        { label: '管理员', value: 'admin' },
+        { label: '审批员', value: 'approver' }
+      ],
       rules: {
-        username: [{ required: true, message: '用户名为必填项', trigger: 'blur' }],
-        password: [{ required: true, message: '密码为必填项', trigger: 'blur' }],
-        email: [{ required: true, message: '邮箱为必填项', trigger: 'blur' }, { type: 'email', message: '请输入正确的邮箱地址', trigger: ['blur', 'change'] }],
-        role: [{ required: true, message: '角色为必填项', trigger: 'change' }]
+        username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+        password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+        role: [{ required: true, message: '请选择角色', trigger: 'change' }],
+        email: [{ type: 'email', message: '请输入正确的邮箱地址', trigger: ['blur', 'change'] }]
       }
+    }
+  },
+  computed: {
+    isSuperAdmin() {
+      return this.$store.getters.roles.includes('super_admin')
+    },
+    roleMap() {
+      const map = {}
+      this.roleOptions.forEach(item => {
+        map[item.value] = item.label
+      })
+      return map
     }
   },
   created() {
@@ -159,7 +177,7 @@ export default {
         username: '',
         password: '',
         email: '',
-        role: 'user',
+        role: 'admin',
         is_active: 1
       }
     },
@@ -199,10 +217,13 @@ export default {
     updateData() {
       this.$refs['dataForm'].validate((valid) => {
         if (valid) {
-          const tempData = {
+          let tempData = {
             role: this.temp.role,
             email: this.temp.email,
             is_active: this.temp.is_active
+          }
+          if (this.isSuperAdmin) {
+            tempData.username = this.temp.username
           }
           updateUser(this.temp.id, tempData).then(() => {
             this.getList()

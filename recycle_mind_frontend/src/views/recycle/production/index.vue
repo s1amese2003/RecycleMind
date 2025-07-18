@@ -4,7 +4,7 @@
     <el-card class="box-card">
       <div slot="header" class="clearfix">
         <span>生产记录</span>
-        <el-button style="float: right; padding: 3px 0" type="text" icon="el-icon-plus" @click="handleRecordCreate">新增记录</el-button>
+        <el-button v-if="!isAdmin" style="float: right; padding: 3px 0" type="text" icon="el-icon-plus" @click="handleRecordCreate">新增记录</el-button>
       </div>
       <el-table v-loading="recordListLoading" :data="recordList" border style="width: 100%">
         <el-table-column prop="id" label="记录ID" width="180" />
@@ -20,8 +20,8 @@
         <el-table-column prop="qualityCheck" label="质检结果" />
         <el-table-column label="操作" width="150">
           <template slot-scope="{row, $index}">
-            <el-button type="primary" size="mini" @click="handleRecordUpdate(row)">编辑</el-button>
-            <el-button type="danger" size="mini" @click="handleRecordDelete(row, $index)">删除</el-button>
+            <el-button v-if="!isAdmin" type="primary" size="mini" @click="handleRecordUpdate(row)">编辑</el-button>
+            <el-button v-if="!isAdmin" type="danger" size="mini" @click="handleRecordDelete(row, $index)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -119,6 +119,11 @@ export default {
         operator: [{ required: true, message: '操作员不能为空', trigger: 'blur' }],
         qualityCheck: [{ required: true, message: '质检结果不能为空', trigger: 'blur' }]
       }
+    }
+  },
+  computed: {
+    isAdmin() {
+      return this.$store.getters.roles.includes('admin')
     }
   },
   created() {
