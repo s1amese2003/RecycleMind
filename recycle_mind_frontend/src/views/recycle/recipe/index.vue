@@ -26,6 +26,17 @@
               </el-select>
             </el-form-item>
 
+            <el-form-item label="启用安全余量">
+              <el-switch
+                v-model="enableSafetyMargin"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <el-tooltip content="开启后，计算结果将在满足标准的基础上，为各元素含量保留一定的安全空间，避免微小波动导致出品不合格。" placement="top">
+                <i class="el-icon-question" style="margin-left: 10px; color: #909399;" />
+              </el-tooltip>
+            </el-form-item>
+
             <el-form-item label="目标产量 (kg)" prop="targetAmount">
               <el-input-number v-model="targetAmount" :min="1" controls-position="right" style="width: 100%;" />
             </el-form-item>
@@ -109,9 +120,17 @@
               :closable="false"
               style="margin-bottom: 20px"
             />
+            <el-alert
+              v-if="validationResult.message"
+              :title="validationResult.message"
+              :type="validationResult.type"
+              show-icon
+              :closable="false"
+              style="margin-bottom: 20px"
+            />
 
             <el-table
-              :data="recipeResult.recipe"
+              :data="editableRecipe"
               border
               style="width: 100%"
               show-summary
@@ -134,16 +153,25 @@
                 align="center"
               >
                 <template slot-scope="{row}">
-                  {{ row.percentage }} %
+                  {{ row.percentage.toFixed(2) }} %
                 </template>
               </el-table-column>
               <el-table-column
-                label="需要用量 (kg)"
-                width="150"
+                label="实际用量 (kg)"
+                width="180"
                 align="center"
               >
                 <template slot-scope="{row}">
-                  {{ ((targetAmount * row.percentage) / 100).toFixed(2) }}
+                  <el-input-number
+                    v-model="row.actual_amount"
+                    :min="0"
+                    :step="1"
+                    :precision="2"
+                    size="small"
+                    controls-position="right"
+                    style="width: 100%"
+                    @change="onAmountChange"
+                  />
                 </template>
               </el-table-column>
               <el-table-column
@@ -154,10 +182,19 @@
                 align="center"
               >
                 <template slot-scope="{row}">
-                  {{ (row.cost * targetAmount).toFixed(2) }}
+                  {{ row.cost.toFixed(2) }}
                 </template>
               </el-table-column>
             </el-table>
+
+            <div style="margin-top: 20px; text-align: left;">
+              <el-button type="info" @click="handleValidateRecipe">
+                <i class="el-icon-s-check" /> 检验当前方案
+              </el-button>
+              <el-button type="warning" @click="handleResetRecipe">
+                <i class="el-icon-refresh-left" /> 重置为推荐方案
+              </el-button>
+            </div>
 
             <h4 style="margin-top: 30px; margin-bottom: 10px;">最终成品成分预览</h4>
             <el-table
@@ -179,6 +216,28 @@
               >
                 <template slot-scope="{row}">
                   <span>{{ row.percentage.toFixed(4) }} %</span>
+                </template>
+              </el-table-column>
+              <el-table-column
+                label="生产标准 (%)"
+                align="center"
+              >
+                <template slot-scope="{row}">
+                  <span v-if="getRequirementForElement(row.name)">
+                    {{ getRequirementForElement(row.name).min }} - {{ getRequirementForElement(row.name).max }}
+                  </span>
+                  <span v-else>N/A</span>
+                </template>
+              </el-table-column>
+              <el-table-column
+                label="检验结果"
+                align="center"
+                width="120"
+              >
+                <template slot-scope="{row}">
+                  <el-tag :type="row.status === '合格' ? 'success' : (row.status === '不合格' ? 'danger' : 'info')">
+                    {{ row.status }}
+                  </el-tag>
                 </template>
               </el-table-column>
             </el-table>
@@ -228,7 +287,14 @@ export default {
       },
       calculating: false,
       executing: false,
-      recipeResult: null
+      recipeResult: null,
+      editableRecipe: [], // 用于可编辑的配方
+      isDirty: false, // 方案是否被手动修改过
+      validationResult: { // 用于存储检验结果
+        message: '',
+        type: 'info'
+      },
+      enableSafetyMargin: true // 默认开启安全余量
     }
   },
   computed: {
@@ -236,14 +302,70 @@ export default {
       return this.$store.getters.roles.includes('super_admin')
     },
     finalCompositionForTable() {
-      if (!this.recipeResult || !this.recipeResult.finalComposition) {
-        return []
+      // 如果方案没有被手动修改过，并且有后端返回的精确结果，则直接使用后端结果
+      if (!this.isDirty && this.recipeResult && this.recipeResult.finalComposition) {
+        return Object.entries(this.recipeResult.finalComposition).map(([name, percentage]) => {
+          const req = this.getRequirementForElement(name);
+          let status = '无要求';
+          if (req) {
+            if (percentage >= req.min && percentage <= req.max) {
+              status = '合格';
+            } else {
+              status = '不合格';
+            }
+          }
+          return { name, percentage, status };
+        }).sort((a, b) => b.percentage - a.percentage);
       }
-      // 将对象 { Si: 1, Fe: 2 } 转换为数组 [ { name: 'Si', percentage: 1 }, { name: 'Fe', percentage: 2 } ]
-      const tableData = Object.entries(this.recipeResult.finalComposition).map(([name, percentage]) => ({
-        name,
-        percentage
-      })).sort((a, b) => b.percentage - a.percentage) // 按含量降序排序
+
+      // 如果方案被修改过，或者没有后端结果，则进行前端实时计算
+      const source = this.editableRecipe;
+      if (source.length === 0) return [];
+
+      const finalComposition = {};
+      // 正确的逻辑: 首先计算出有效的总投入重量
+      let totalEffectiveAmount = 0;
+
+      source.forEach(recipeItem => {
+        const materialDetails = this.allWasteMaterials.find(m => m.id === recipeItem.id);
+        if (materialDetails) {
+          const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
+          totalEffectiveAmount += recipeItem.actual_amount * yieldRate;
+        }
+      });
+
+      if (totalEffectiveAmount === 0) return [];
+
+      source.forEach(recipeItem => {
+        const materialDetails = this.allWasteMaterials.find(m => m.id === recipeItem.id);
+        if (materialDetails && materialDetails.composition) {
+          const composition = materialDetails.composition; // 已在获取时转换为对象
+          const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
+          const effectiveAmount = recipeItem.actual_amount * yieldRate;
+
+          for (const el in composition) {
+            if (!finalComposition[el]) finalComposition[el] = 0;
+            // 元素贡献(绝对重量) = (原料投入量 * 出水率) * (元素在原料中的含量百分比)
+            finalComposition[el] += effectiveAmount * (composition[el] / 100);
+          }
+        }
+      });
+
+      // 将绝对含量转换为百分比，使用正确的总有效重量作为分母
+      const tableData = Object.entries(finalComposition).map(([name, absoluteAmount]) => {
+        const percentage = (absoluteAmount / totalEffectiveAmount) * 100;
+        const req = this.getRequirementForElement(name);
+        let status = '无要求';
+        if (req) {
+          if (percentage >= req.min && percentage <= req.max) {
+            status = '合格';
+          } else {
+            status = '不合格';
+          }
+        }
+        return { name, percentage, status };
+      }).sort((a, b) => b.percentage - a.percentage); // 按含量降序排序
+
       return tableData;
     }
   },
@@ -252,9 +374,58 @@ export default {
     this.fetchAllWasteMaterials()
   },
   methods: {
+    getRequirementForElement(elementName) {
+      return this.requirement.elements.find(el => el.name === elementName);
+    },
+    onAmountChange() {
+      this.isDirty = true; // 标记方案已被修改
+      // 当用量改变时，重置检验结果，提示用户需要重新检验
+      this.validationResult = { message: '配方已修改，请重新检验。', type: 'warning' };
+
+      // 重新计算配比和成本
+      const totalAmount = this.editableRecipe.reduce((sum, item) => sum + item.actual_amount, 0);
+      if (totalAmount > 0) {
+        this.editableRecipe.forEach(item => {
+          const materialDetails = this.allWasteMaterials.find(m => m.id === item.id);
+          item.percentage = (item.actual_amount / totalAmount) * 100;
+          item.cost = item.actual_amount * (parseFloat(materialDetails.unit_price) || 0);
+        });
+      }
+    },
+    handleResetRecipe() {
+      this.initEditableRecipe();
+      this.isDirty = false; // 重置时，恢复为未修改状态
+      this.$message.success('已重置为系统推荐方案');
+      this.validationResult = { message: '', type: 'info' };
+    },
+    handleValidateRecipe() {
+      const results = this.finalCompositionForTable;
+      const isAllPass = results.every(item => item.status === '合格' || item.status === '无要求');
+
+      if (isAllPass) {
+        this.validationResult = { message: '检验通过！当前方案满足所有生产要求。', type: 'success' };
+      } else {
+        this.validationResult = { message: '检验不通过！部分元素含量未达到标准。', type: 'error' };
+      }
+      this.$message({
+        message: this.validationResult.message,
+        type: this.validationResult.type
+      });
+    },
     fetchAllWasteMaterials() {
       getWasteMaterialList({ limit: 9999, page: 1 }).then(response => {
-        this.allWasteMaterials = response.data.items
+        this.allWasteMaterials = response.data.items.map(item => {
+          // 确保 composition 是一个对象
+          if (typeof item.composition === 'string') {
+            try {
+              item.composition = JSON.parse(item.composition);
+            } catch (e) {
+              console.error(`Failed to parse composition for material ${item.id}:`, item.composition);
+              item.composition = {};
+            }
+          }
+          return item;
+        });
       }).catch(error => {
         this.$message.error('获取废料列表失败')
         console.error(error)
@@ -280,34 +451,62 @@ export default {
         if (selectedProduct[key]) {
           elements.push({
             name: key,
-            min: selectedProduct[key].min || 0,
-            max: selectedProduct[key].max || 0
+            min: parseFloat(selectedProduct[key].min) || 0,
+            max: parseFloat(selectedProduct[key].max) || 0
           })
         }
       })
       this.requirement.elements = elements
     },
-    handleCalculate() {
+    async handleCalculate() {
       this.calculating = true
-      const requirementsForApi = {}
-      this.requirement.elements.forEach(el => {
-        if (el.min > 0 || el.max > 0) {
-          requirementsForApi[el.name] = { min: el.min, max: el.max }
-        }
-      })
-
-      calculateRecipe({ requirements: requirementsForApi, excluded_ids: this.excludedMaterials })
-        .then(response => {
-          this.recipeResult = response.data
+      try {
+          const payload = {
+              requirements: this.requirement.elements.reduce((acc, el) => {
+                  acc[el.name] = { min: el.min, max: el.max }
+                  return acc
+              }, {}),
+              excluded_ids: this.excludedMaterials,
+              enable_safety_margin: this.enableSafetyMargin // 传递开关状态
+          }
+          const { data } = await calculateRecipe(payload)
+          this.recipeResult = data
+          this.initEditableRecipe(); // 初始化可编辑的配方
+          this.isDirty = false; // 计算成功后，方案是“干净”的
+          this.validationResult = { message: '', type: 'info' }; // 清空之前的检验结果
           this.$message.success('配方计算成功！')
-        })
-        .catch(error => {
+      } catch (error) {
           this.$message.error('配方计算失败: ' + (error.response?.data?.message || error.message))
           this.recipeResult = null
-        })
-        .finally(() => {
+      } finally {
           this.calculating = false
-        })
+      }
+    },
+    initEditableRecipe() {
+      if (!this.recipeResult || !this.recipeResult.recipe) {
+        this.editableRecipe = [];
+        return;
+      }
+      const totalRecommendedAmount = this.targetAmount;
+      this.editableRecipe = this.recipeResult.recipe.map(item => {
+        const materialDetails = this.allWasteMaterials.find(m => m.id === item.id);
+        const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
+        // 注意：后端的百分比已经是考虑了出水率之后的比例, 代表对最终1kg成品的贡献比例
+        // 所以实际用量需要反推出水率的影响
+        // const actual_amount = (totalRecommendedAmount * item.percentage / 100) / yieldRate;
+
+        // 经过后端逻辑修改后，返回的percentage已经是投入原料的百分比了，不再需要除以出水率
+        // 但为了安全，这里的逻辑应该和后端返回的数据结构强相关
+        // 假设后端 percentage 就是直接的重量百分比
+        const actual_amount = totalRecommendedAmount * item.percentage / 100;
+
+        return {
+          ...item,
+          actual_amount: parseFloat(actual_amount.toFixed(2)),
+          // 成本也需要重新计算
+          cost: actual_amount * (parseFloat(materialDetails.unit_price) || 0)
+        };
+      });
     },
     getSummaries(param) {
       const { columns, data } = param;
@@ -317,32 +516,25 @@ export default {
           sums[index] = '合计';
           return;
         }
+        // 对配比进行合计
         if (column.property === 'percentage') {
-          const values = data.map(item => Number(item[column.property]));
-          if (!values.every(value => isNaN(value))) {
-            const sum = values.reduce((prev, curr) => {
-              const value = Number(curr);
-              if (!isNaN(value)) {
-                return prev + curr;
-              } else {
-                return prev;
-              }
-            }, 0);
-            sums[index] = sum.toFixed(2) + ' %';
-          } else {
-            sums[index] = 'N/A';
-          }
+          const values = data.map(item => Number(item.percentage));
+          const sum = values.reduce((prev, curr) => prev + curr, 0);
+          sums[index] = sum.toFixed(2) + ' %';
+          return;
         }
-        if (column.label === '需要用量 (kg)') {
-          const totalAmount = data.reduce((prev, curr) => {
-            const amount = (this.targetAmount * curr.percentage) / 100;
-            return prev + amount;
-          }, 0);
-          sums[index] = totalAmount.toFixed(2) + ' kg';
+        // 对实际用量进行合计
+        if (column.label === '实际用量 (kg)') {
+          const values = data.map(item => Number(item.actual_amount));
+          const sum = values.reduce((prev, curr) => prev + curr, 0);
+          sums[index] = sum.toFixed(2) + ' kg';
+          return;
         }
+        // 对成本进行合计
         if (column.property === 'cost' && this.isSuperAdmin) {
-           const totalCost = data.reduce((prev, curr) => prev + (curr.cost * this.targetAmount), 0);
+           const totalCost = data.reduce((prev, curr) => prev + curr.cost, 0);
            sums[index] = '¥ ' + totalCost.toFixed(2);
+           return;
         }
       });
       return sums;
@@ -355,8 +547,9 @@ export default {
 
       const productionData = {
         productName: this.requirement.name,
-        targetAmount: this.targetAmount,
-        recipe: this.recipeResult.recipe.map(item => ({
+        targetAmount: this.editableRecipe.reduce((sum, item) => sum + item.actual_amount, 0),
+        recipe: this.editableRecipe.map(item => ({
+          id: item.id,
           name: item.name,
           percentage: item.percentage
         }))
