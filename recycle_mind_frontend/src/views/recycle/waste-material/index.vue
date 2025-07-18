@@ -60,6 +60,20 @@
         </template>
       </el-table-column>
 
+      <el-table-column label="出水率" width="120px" align="center">
+        <template slot-scope="{row}">
+          <span v-if="row.yield_rate !== null && row.yield_rate !== undefined">{{ row.yield_rate }} %</span>
+          <span v-else>--</span>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="实际单价" width="120px" align="center">
+        <template slot-scope="{row}">
+          <span v-if="row.actual_unit_price !== null && row.actual_unit_price !== undefined">{{ row.actual_unit_price.toFixed(2) }} 元/kg</span>
+          <span v-else>--</span>
+        </template>
+      </el-table-column>
+
       <el-table-column label="成分构成" min-width="250px" align="left">
         <template slot-scope="{row}">
           <div style="display: flex; flex-wrap: wrap;">
@@ -76,14 +90,14 @@
       </el-table-column>
 
       <el-table-column label="操作" align="center" width="230" class-name="small-padding fixed-width">
-        <template slot-scope="{row}">
+        <template slot-scope="{row, index}">
           <el-button type="primary" size="mini" @click="handleUpdate(row)">
             编辑
           </el-button>
           <el-button size="mini" type="success" @click="handleStock(row)">
             库存变更
           </el-button>
-          <el-button size="mini" type="danger" @click="handleDelete(row)">
+          <el-button size="mini" type="danger" @click="handleDelete(row, index)">
             删除
           </el-button>
         </template>
@@ -122,6 +136,14 @@
 
         <el-form-item label="单价(元/kg)" prop="unit_price">
           <el-input-number v-model="temp.unit_price" :min="0" :precision="2" />
+        </el-form-item>
+
+        <el-form-item label="出水率(%)" prop="yield_rate">
+          <el-input-number v-model="temp.yield_rate" :min="0" :max="100" :precision="2" />
+        </el-form-item>
+
+        <el-form-item label="实际单价(元/kg)">
+          <el-input :value="actualUnitPrice" :disabled="true" />
         </el-form-item>
 
         <el-form-item label="成分构成">
@@ -214,6 +236,15 @@ export default {
   name: 'WasteMaterial',
   components: { Pagination },
   directives: { waves },
+  computed: {
+    actualUnitPrice() {
+      const { unit_price, yield_rate } = this.temp
+      if (typeof unit_price === 'number' && typeof yield_rate === 'number' && yield_rate > 0) {
+        return (unit_price / (yield_rate / 100)).toFixed(2)
+      }
+      return '0.00'
+    }
+  },
   data() {
     return {
       tableKey: 0,
@@ -232,7 +263,8 @@ export default {
         storage_area: '',
         stock_kg: 0,
         unit_price: 0,
-        elements: [] // Use elements array for form editing
+        yield_rate: 100,
+        elements: []
       },
       dialogFormVisible: false,
       dialogStatus: '',
@@ -252,51 +284,42 @@ export default {
   },
   created() {
     this.getList()
-    this.$bus.$on('production-executed', this.getList)
-  },
-  beforeDestroy() {
-    this.$bus.$off('production-executed', this.getList)
+    this.defaultElements = standardElements.map(name => ({ name, percentage: 0 }))
   },
   methods: {
     getList() {
       this.listLoading = true
-      getWasteMaterialList(this.listQuery).then(response => {
+      getWasteMaterialList({
+        page: this.listQuery.page,
+        limit: this.listQuery.limit
+      }).then(response => {
         this.list = response.data.items.map(item => {
           if (item.composition && typeof item.composition === 'string') {
-            try {
-              item.composition = JSON.parse(item.composition);
-            } catch (e) {
-              console.error('解析成分构成失败:', e);
-              item.composition = {}; // or some error indicator
-            }
+            item.composition = JSON.parse(item.composition)
           }
-          return item;
+          if (item.unit_price && item.yield_rate) {
+            item.actual_unit_price = item.unit_price / (item.yield_rate / 100);
+          }
+          return item
         })
         this.total = response.data.total
         this.listLoading = false
-      }).catch(err => {
-        console.error('调用 getWasteMaterialList API 时捕获到错误:', err)
-        this.listLoading = false
       })
     },
-
-    resetTemp() {
+    handleFilter() {
+      this.listQuery.page = 1
+      this.getList()
+    },
+    handleCreate() {
       this.temp = {
         id: undefined,
         name: '',
         storage_area: '',
         stock_kg: 0,
         unit_price: 0,
-        elements: standardElements.map(name => ({ name, percentage: 0 }))
+        yield_rate: 100,
+        elements: JSON.parse(JSON.stringify(this.defaultElements))
       }
-    },
-
-    handleFilter() {
-      this.listQuery.page = 1
-      this.getList()
-    },
-    handleCreate() {
-      this.resetTemp()
       this.dialogStatus = 'create'
       this.dialogFormVisible = true
       this.$nextTick(() => {
@@ -306,13 +329,9 @@ export default {
     createData() {
       this.$refs['dataForm'].validate((valid) => {
         if (valid) {
-          const postData = { ...this.temp }
-          postData.composition = JSON.stringify(elementsToComposition(postData.elements))
-          delete postData.elements
-
-          this.$store.dispatch('app/setLoading', true)
-          createWasteMaterial(postData).then(() => {
-            this.getList() // Refresh list to get new data
+          const tempData = this.prepareTempData()
+          createWasteMaterial(tempData).then(() => {
+            this.getList()
             this.dialogFormVisible = false
             this.$notify({
               title: '成功',
@@ -320,23 +339,17 @@ export default {
               type: 'success',
               duration: 2000
             })
-          }).finally(() => {
-            this.$store.dispatch('app/setLoading', false)
           })
         }
       })
     },
     handleUpdate(row) {
-      const composition = (row.composition && typeof row.composition === 'object')
-        ? row.composition
-        : {};
-
       this.temp = {
         ...row,
-        elements: standardElements.map(name => ({
-          name,
-          percentage: composition[name] || 0
-        }))
+        elements: this.compositionToElements(row.composition)
+      }
+      if (this.temp.yield_rate === null || this.temp.yield_rate === undefined) {
+        this.temp.yield_rate = 100
       }
       this.dialogStatus = 'update'
       this.dialogFormVisible = true
@@ -347,13 +360,9 @@ export default {
     updateData() {
       this.$refs['dataForm'].validate((valid) => {
         if (valid) {
-          const postData = { ...this.temp }
-          postData.composition = JSON.stringify(elementsToComposition(postData.elements))
-          delete postData.elements
-
-          this.$store.dispatch('app/setLoading', true)
-          updateWasteMaterial(postData.id, postData).then(() => {
-            this.getList() // Refresh list
+          const tempData = this.prepareTempData()
+          updateWasteMaterial(tempData.id, tempData).then(() => {
+            this.getList()
             this.dialogFormVisible = false
             this.$notify({
               title: '成功',
@@ -361,42 +370,40 @@ export default {
               type: 'success',
               duration: 2000
             })
-          }).finally(() => {
-            this.$store.dispatch('app/setLoading', false)
           })
         }
       })
     },
-    handleDelete(row) {
-      this.$confirm(`确定要删除废料 ${row.name} 吗？`, '提示', {
+    handleDelete(row, index) {
+      this.$confirm('确定要删除这个废料吗？', '警告', {
         confirmButtonText: '确定',
         cancelButtonText: '取消',
         type: 'warning'
-      }).then(() => {
-        deleteWasteMaterial(row.id).then(() => {
+      }).then(async() => {
+        try {
+          await deleteWasteMaterial(row.id)
+          this.list.splice(index, 1)
           this.$notify({
             title: '成功',
             message: '删除成功',
             type: 'success',
             duration: 2000
           })
-          const index = this.list.findIndex(v => v.id === row.id)
-          this.list.splice(index, 1)
-        })
-      }).catch(() => {
-        this.$message({
-          type: 'info',
-          message: '已取消删除'
-        });
-      });
+        } catch (error) {
+          this.$notify({
+            title: '失败',
+            message: '删除失败',
+            type: 'error',
+            duration: 2000
+          })
+        }
+      })
     },
-
     handleStock(row) {
+      this.temp = Object.assign({}, row) // copy obj
       this.stockForm.id = row.id
-      this.stockForm.reason = ''
       this.stockDialogVisible = true
     },
-
     updateStock() {
       const currentItem = this.list.find(item => item.id === this.stockForm.id)
       if (!currentItem) {
@@ -434,61 +441,60 @@ export default {
       this.downloadLoading = true
       import('@/vendor/Export2Excel').then(excel => {
         try {
-          const tHeader = ['废料编号', '废料名称', '存放区域', '库存(kg)', '单价(元/kg)', '成分构成']
-          const filterVal = ['id', 'name', 'storage_area', 'stock_kg', 'unit_price', 'composition']
+          const tHeader = ['废料编号', '废料名称', '存放区域', '库存(kg)', '单价(元/kg)', '出水率(%)', '实际单价(元/kg)', '成分构成']
+          const filterVal = ['id', 'name', 'storage_area', 'stock_kg', 'unit_price', 'yield_rate', 'actual_unit_price', 'composition']
           const data = this.formatJson(filterVal, this.list)
           excel.export_json_to_excel({
             header: tHeader,
             data,
-            filename: '废料库存'
+            filename: '废料列表'
           })
-        } catch (error) {
-          console.error('导出 Excel 时出错:', error)
+        } catch (e) {
+          console.error(e)
         } finally {
           this.downloadLoading = false
         }
-      }).catch(err => {
-        console.error('加载 Export2Excel 模块失败:', err)
-        this.$message.error('导出功能加载失败，请查看控制台获取更多信息')
-        this.downloadLoading = false
       })
     },
     formatJson(filterVal, jsonData) {
       return jsonData.map(v => filterVal.map(j => {
         if (j === 'composition') {
-          if (v[j] && typeof v[j] === 'object') {
-            return Object.entries(v[j]).map(([key, value]) => `${key}: ${value}%`).join(', ')
-          }
-          return ''
-        } else {
-          return v[j]
+          return JSON.stringify(v[j])
         }
+        return v[j]
       }))
+    },
+    compositionToElements(composition) {
+      if (composition && typeof composition === 'object') {
+        return standardElements.map(name => ({
+          name,
+          percentage: composition[name] || 0
+        }))
+      }
+      return []
+    },
+    prepareTempData() {
+      const tempData = Object.assign({}, this.temp)
+      tempData.composition = elementsToComposition(tempData.elements)
+      tempData.actual_unit_price = this.actualUnitPrice
+      delete tempData.elements
+      return tempData
     }
   }
 }
 </script>
-
 <style scoped>
-.app-container {
-  padding: 20px;
-}
-.filter-container {
-  margin-bottom: 15px;
-}
 .composition-item {
   display: flex;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .element-name {
-  width: 40px; /* Adjusted for short element names */
-  font-weight: 500;
-  text-align: left;
+  width: 50px;
+  text-align: right;
   margin-right: 10px;
-  flex-shrink: 0; /* Prevents shrinking */
 }
 .percentage-sign {
-  margin-left: 8px;
+  margin-left: 5px;
 }
 </style>

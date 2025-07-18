@@ -15,6 +15,16 @@ app.use(cors());
 // 2. 使用 express.json() 中间件来解析请求体中的 JSON 数据
 app.use(express.json());
 
+/*
+--  请在您的 MySQL 数据库 'recycle_mind' 中执行以下 SQL 语句来为 'waste_materials' 表添加新字段：
+ALTER TABLE waste_materials
+ADD COLUMN yield_rate DECIMAL(5, 2) DEFAULT 100.00 COMMENT '出水率',
+ADD COLUMN actual_unit_price DECIMAL(10, 2) COMMENT '实际单价';
+
+-- 更新现有数据（可选，如果需要根据当前数据计算）
+UPDATE waste_materials SET actual_unit_price = unit_price / (yield_rate / 100) WHERE yield_rate IS NOT NULL AND yield_rate > 0;
+*/
+
 // --- API 路由定义 ---
 
 // --- 用户认证 API ---
@@ -122,16 +132,17 @@ app.get('/api/waste-material/list', async (req, res) => {
  * POST /api/waste-material
  */
 app.post('/api/waste-material', async (req, res) => {
-  const { name, storage_area, composition, stock_kg, unit_price } = req.body;
+  const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
+  const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
   console.log('接收到新增废料请求:', { name });
   try {
     const [result] = await db.query(
-      'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price) VALUES (?, ?, ?, ?, ?)',
-      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price]
+      'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price, yield_rate, actual_unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price, yield_rate, actual_unit_price]
     );
     res.status(201).json({
       code: 20000,
-      data: { id: result.insertId, ...req.body }
+      data: { id: result.insertId, ...req.body, actual_unit_price }
     });
   } catch (error) {
     console.error('新增废料 API 数据库操作出错:', error);
@@ -145,12 +156,13 @@ app.post('/api/waste-material', async (req, res) => {
  */
 app.put('/api/waste-material/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, storage_area, composition, stock_kg, unit_price } = req.body;
+  const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
+  const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
   console.log(`接收到修改废料 ${id} 的请求:`, { name });
   try {
     const [result] = await db.query(
-      'UPDATE waste_materials SET name = ?, storage_area = ?, composition = ?, stock_kg = ?, unit_price = ? WHERE id = ?',
-      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price, id]
+      'UPDATE waste_materials SET name = ?, storage_area = ?, composition = ?, stock_kg = ?, unit_price = ?, yield_rate = ?, actual_unit_price = ? WHERE id = ?',
+      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price, yield_rate, actual_unit_price, id]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ code: 40401, message: '未找到指定ID的废料。' });
@@ -650,8 +662,8 @@ app.post('/api/recipe/calculate', async (req, res) => {
             const req = requirements[el];
             if (req) {
                 const constraint = {};
-                if (req.min > 0) constraint.min = req.min;
-                if (req.max > 0 && req.max >= req.min) constraint.max = req.max;
+                if (req.min > 0) constraint.min = req.min / 100;
+                if (req.max > 0 && req.max >= req.min) constraint.max = req.max / 100;
                 if (Object.keys(constraint).length > 0) model.constraints[el] = constraint;
             }
         });
@@ -659,41 +671,44 @@ app.post('/api/recipe/calculate', async (req, res) => {
         // 2.4 添加 "其他单个元素" (others) 的约束
         if (requirements.others && requirements.others.max > 0) {
             otherElements.forEach(el => {
-                model.constraints[`other_${el}`] = { max: requirements.others.max };
+                model.constraints[`other_${el}`] = { max: requirements.others.max / 100 };
             });
         }
         
         // 2.5 添加 "其他元素合计" (total_others) 的约束
         if (requirements.total_others && requirements.total_others.max > 0) {
-            model.constraints.total_others_sum = { max: requirements.total_others.max };
+            model.constraints.total_others_sum = { max: requirements.total_others.max / 100 };
         }
 
         // 2.6 为每个废料创建变量及其对各约束的贡献
         wasteMaterials.forEach(material => {
             const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
-            const variable = { cost: parseFloat(material.unit_price), total_percentage: 1 };
+            const yieldRate = parseFloat(material.yield_rate) || 100;
+            
+            // 变量代表的是每单位成品中，来自此原料的重量贡献（占成品重量的百分比）
+            const variable = {
+                cost: parseFloat(material.actual_unit_price) || 0,
+                total_percentage: 1
+            };
             const variableName = `mat_${material.id}`;
 
-            // 为每个变量添加非负约束
-            model.constraints[variableName] = { min: 0 };
-            variable[variableName] = 1;
-
             // 添加主要元素的贡献
+            // 元素含量 = (原料中的元素含量 %)，这里不需要乘以出水率，因为成本已经是 actual_unit_price
             specifiedElements.forEach(el => {
-                variable[el] = composition[el] || 0;
+                variable[el] = (composition[el] || 0) / 100;
             });
 
             // 添加 "其他单个元素" 的贡献
             if (requirements.others && requirements.others.max > 0) {
                 otherElements.forEach(el => {
-                    variable[`other_${el}`] = composition[el] || 0;
+                    variable[`other_${el}`] = (composition[el] || 0) / 100;
                 });
             }
 
             // 添加 "其他元素合计" 的贡献
             if (requirements.total_others && requirements.total_others.max > 0) {
                 const totalOthersInMaterial = otherElements.reduce((sum, el) => sum + (composition[el] || 0), 0);
-                variable.total_others_sum = totalOthersInMaterial;
+                variable.total_others_sum = totalOthersInMaterial / 100;
             }
             
             model.variables[variableName] = variable; 
@@ -710,38 +725,83 @@ app.post('/api/recipe/calculate', async (req, res) => {
             let totalCost = 0;
             const finalComposition = {}; // 最终成分
 
-            const recipe = Object.keys(results)
+            let rawRecipe = Object.keys(results)
                 .filter(key => key.startsWith('mat_'))
                 .map(key => {
-                    const weight = results[key]; // 这是 solver 算出的权重 (0 to 1)
-                    const percentage = weight * 100; // 转换为百分比
-                    const id = parseInt(key.substring(4), 10); // from "mat_..."
+                    const contributionWeight = results[key]; // 这是该原料对最终1单位产品的重量贡献
+                    const id = parseInt(key.substring(4), 10);
                     const material = wasteMaterials.find(m => m.id === id);
                     
-                    if (!material) return null;
+                    if (!material || contributionWeight <= 0) return null;
 
-                    // 累加计算最终成分
-                    const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
-                    for (const element in composition) {
-                        if (Object.prototype.hasOwnProperty.call(composition, element)) {
-                            if (!finalComposition[element]) {
-                                finalComposition[element] = 0;
-                            }
-                            // 元素在最终成品中的含量 = Σ(废料中的元素含量 * 废料在配方中的权重)
-                            finalComposition[element] += (composition[element] * weight);
-                        }
-                    }
+                    const yieldRate = parseFloat(material.yield_rate) || 100;
+                    // 需要投入的实际原料重量 = 对最终产品的重量贡献 / 出水率
+                    const rawWeight = contributionWeight / (yieldRate / 100);
 
-                    const itemCost = weight * material.unit_price;
-                    totalCost += itemCost;
                     return {
+                        id: id,
                         name: material.name,
                         storage_area: material.storage_area,
-                        percentage: parseFloat(percentage.toFixed(2)),
-                        cost: parseFloat(itemCost.toFixed(2)) // 为每种物料添加成本字段
+                        rawWeight: rawWeight,
+                        material: material
                     };
                 })
-                .filter(item => item && item.percentage > 0); // 只返回配比大于0的原料
+                .filter(item => item);
+
+            // 根据需要的原料重量（rawWeight）来计算百分比
+            const totalRawWeight = rawRecipe.reduce((sum, item) => sum + item.rawWeight, 0);
+            if (totalRawWeight === 0) {
+              return res.status(500).json({ code: 50003, message: '计算得到的总投入量为0，无法生成有效配方。' });
+            }
+
+            let recipe = rawRecipe.map(item => {
+                const percentage = (item.rawWeight / totalRawWeight) * 100;
+                return { ...item, percentage };
+            });
+
+            // --- 处理舍入误差，确保总和为100% ---
+            const totalPercentage = recipe.reduce((sum, item) => sum + item.percentage, 0);
+            if (totalPercentage !== 100) {
+                const diff = 100 - totalPercentage;
+                const maxItem = recipe.reduce((max, item) => item.percentage > max.percentage ? item : max, recipe[0]);
+                maxItem.percentage += diff;
+            }
+            // --- 舍入误差处理结束 ---
+            
+            recipe = recipe.map(item => {
+                const material = item.material;
+                const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
+
+                // 累加计算最终成分
+                // 元素在最终成品中的含量 = Σ (该原料对成品的重量贡献 * 元素在原料中的含量)
+                const contributionWeight = item.rawWeight * ( (parseFloat(material.yield_rate) || 100) / 100 );
+                for (const element in composition) {
+                    if (Object.prototype.hasOwnProperty.call(composition, element)) {
+                        if (!finalComposition[element]) {
+                            finalComposition[element] = 0;
+                        }
+                        finalComposition[element] += contributionWeight * (composition[element] / 100);
+                    }
+                }
+
+                const itemCost = item.rawWeight * material.actual_unit_price; // 总成本用原料重量 * 原料实际单价
+                totalCost += itemCost;
+                
+                return {
+                    name: item.name,
+                    storage_area: item.storage_area,
+                    percentage: parseFloat(item.percentage.toFixed(2)),
+                    cost: parseFloat(itemCost.toFixed(2))
+                };
+            }).filter(item => item && item.percentage > 0);
+            
+            // 归一化最终成分，使其总和为1
+            const totalFinalComposition = Object.values(finalComposition).reduce((sum, val) => sum + val, 0);
+            if (totalFinalComposition > 0) {
+              for(const el in finalComposition) {
+                finalComposition[el] = (finalComposition[el] / totalFinalComposition) * 100;
+              }
+            }
 
             // 格式化最终成分，保留小数点后4位以提高精度
             const formattedComposition = Object.keys(finalComposition).reduce((acc, key) => {
