@@ -301,6 +301,9 @@ export default {
     isSuperAdmin() {
       return this.$store.getters.roles.includes('super_admin')
     },
+    username() {
+      return this.$store.getters.name
+    },
     finalCompositionForTable() {
       // 如果方案没有被手动修改过，并且有后端返回的精确结果，则直接使用后端结果
       if (!this.isDirty && this.recipeResult && this.recipeResult.finalComposition) {
@@ -545,6 +548,22 @@ export default {
         return
       }
 
+      this.handleValidateRecipe() // 在执行前再次检验
+      if (this.validationResult.type !== 'success') {
+        this.$confirm('当前方案未通过检验或尚未检验，确定要执行吗?', '提示', {
+          confirmButtonText: '确定执行',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(() => {
+          this.proceedWithProduction();
+        }).catch(() => {
+          // 用户取消
+        });
+      } else {
+        this.proceedWithProduction();
+      }
+    },
+    proceedWithProduction() {
       const productionData = {
         productName: this.requirement.name,
         targetAmount: this.editableRecipe.reduce((sum, item) => sum + item.actual_amount, 0),
@@ -552,17 +571,21 @@ export default {
           id: item.id,
           name: item.name,
           percentage: item.percentage
-        }))
+        })),
+        operator: this.username // 传递当前用户名
       }
 
       this.executing = true;
       executeProduction(productionData)
-        .then(() => {
-          this.$alert('生产任务已成功创建，相关废料库存已扣减。', '生产执行成功', {
+        .then((response) => {
+          this.$alert(response.data.message || '生产计划已成功创建，等待审批。', '操作成功', {
             confirmButtonText: '确定',
-            type: 'success'
+            type: 'success',
+            callback: () => {
+              this.recipeResult = null; // 清空结果，准备下一次计算
+              this.editableRecipe = [];
+            }
           });
-          this.recipeResult = null; // 清空结果，准备下一次计算
         })
         .catch(error => {
           this.$message.error('生产执行失败: ' + (error.response?.data?.message || error.message))

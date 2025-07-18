@@ -51,17 +51,17 @@ export function addProductionRecord(data) {
   })
 }
 
-export function updateProductionRecord(id, data) {
-  return request({
-    url: `/production/record/${id}`,
-    method: 'put',
-    data
-  })
-}
+// export function updateProductionRecord(id, data) {
+//   return request({
+//     url: `/production/record/${id}`,
+//     method: 'put',
+//     data
+//   })
+// }
 
 export function deleteProductionRecord(id) {
   return request({
-    url: `/production/records/${id}`,
+    url: `/production/record/${id}`,
     method: 'delete'
   })
 }
@@ -69,6 +69,14 @@ export function deleteProductionRecord(id) {
 export function executeProduction(data) {
   return request({
     url: '/production/execute',
+    method: 'post',
+    data
+  })
+}
+
+export function approveProductionRecord(id, data) {
+  return request({
+    url: `/production/record/${id}/approve`,
     method: 'post',
     data
   })

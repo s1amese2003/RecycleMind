@@ -440,24 +440,26 @@ app.get('/api/transaction/list', async (req, res) => {
  */
 app.get('/api/production/record/list', async (req, res) => {
   console.log('接收到获取生产记录列表的请求');
+  const { page = 1, limit = 20 } = req.query;
+
   try {
-    const [rows] = await db.query('SELECT * FROM production_records ORDER BY production_time DESC');
-    const items = rows.map(item => ({
-        id: item.id,
-        planId: item.plan_id,
-        productName: item.product_name,
-        actualAmount: item.actual_amount,
-        unit: item.unit,
-        productionTime: item.production_time,
-        operator: item.operator,
-        qualityCheck: item.quality_check,
-        qualityReport: item.quality_report,
-        materials: item.materials
-    }));
+    const whereClause = "WHERE id LIKE 'plan_%'";
+
+    // 获取总数
+    const countQuery = `SELECT COUNT(*) as total FROM production_records ${whereClause}`;
+    const [countRows] = await db.query(countQuery);
+    const total = countRows[0].total;
+
+    // 获取分页数据
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const dataQuery = `SELECT * FROM production_records ${whereClause} ORDER BY production_time DESC LIMIT ? OFFSET ?`;
+    const [rows] = await db.query(dataQuery, [parseInt(limit, 10), offset]);
+
     res.json({
       code: 20000,
       data: {
-        items: items
+        items: rows,
+        total: total
       }
     });
   } catch (error) {
@@ -495,22 +497,22 @@ app.post('/api/production/record', async (req, res) => {
  * 修改生产记录
  * PUT /api/production/record/:id
  */
-app.put('/api/production/record/:id', async (req, res) => {
-  const { id } = req.params;
-  const { plan_id, product_name, actual_amount, unit, production_time, operator, quality_check, materials_used, quality_report } = req.body;
-  const formattedProductionTime = production_time.replace('T', ' ').substring(0, 19);
-  try {
-    const [result] = await db.query(
-      'UPDATE production_records SET plan_id = ?, product_name = ?, actual_amount = ?, unit = ?, production_time = ?, operator = ?, quality_check = ?, materials_used = ?, quality_report = ? WHERE id = ?',
-      [plan_id, product_name, actual_amount, unit, formattedProductionTime, operator, quality_check, JSON.stringify(materials_used), quality_report, id]
-    );
-    if (result.affectedRows === 0) return res.status(404).json({ code: 40401, message: '未找到记录。' });
-    res.json({ code: 20000, data: 'success' });
-  } catch (error) {
-    console.error(`修改生产记录 ${id} API 出错:`, error);
-    res.status(500).json({ code: 50000, message: '服务器错误，修改生产记录失败。' });
-  }
-});
+// app.put('/api/production/record/:id', async (req, res) => {
+//   const { id } = req.params;
+//   const { plan_id, product_name, actual_amount, unit, production_time, operator, quality_check, materials_used, quality_report } = req.body;
+//   const formattedProductionTime = production_time.replace('T', ' ').substring(0, 19);
+//   try {
+//     const [result] = await db.query(
+//       'UPDATE production_records SET plan_id = ?, product_name = ?, actual_amount = ?, unit = ?, production_time = ?, operator = ?, quality_check = ?, materials_used = ?, quality_report = ? WHERE id = ?',
+//       [plan_id, product_name, actual_amount, unit, formattedProductionTime, operator, quality_check, JSON.stringify(materials_used), quality_report, id]
+//     );
+//     if (result.affectedRows === 0) return res.status(404).json({ code: 40401, message: '未找到记录。' });
+//     res.json({ code: 20000, data: 'success' });
+//   } catch (error) {
+//     console.error(`修改生产记录 ${id} API 出错:`, error);
+//     res.status(500).json({ code: 50000, message: '服务器错误，修改生产记录失败。' });
+//   }
+// });
 
 /**
  * 删除生产记录
@@ -848,62 +850,120 @@ app.post('/api/recipe/calculate', async (req, res) => {
  * POST /api/production/execute
  */
 app.post('/api/production/execute', async (req, res) => {
-    const { productName, targetAmount, recipe } = req.body;
-    console.log('接收到执行生产请求:', { productName, targetAmount });
+    const { productName, targetAmount, recipe, operator } = req.body;
+    console.log('接收到创建生产计划请求:', { productName, targetAmount });
 
     if (!productName || !targetAmount || !recipe || recipe.length === 0) {
-        return res.status(400).json({ code: 40001, message: '生产参数不完整。' });
+        return res.status(400).json({ code: 40001, message: '生产计划参数不完整。' });
     }
-
-    const connection = await db.getConnection(); // 从连接池获取一个连接
-
+    
+    // 新流程：只创建生产记录，状态为“待审批”，不涉及库存操作。
+    const connection = await db.getConnection();
     try {
-        await connection.beginTransaction(); // 开始事务
+        const materialsUsed = recipe.map(item => {
+            const materialAmount = targetAmount * item.percentage / 100;
+            return {
+                id: item.id,
+                name: item.name,
+                amount: parseFloat(materialAmount.toFixed(2)),
+                percentage: item.percentage
+            };
+        });
 
-        // 1. 检查库存并更新
-        for (const item of recipe) {
-            const requiredAmount = (targetAmount * item.percentage) / 100;
-            const [rows] = await connection.query('SELECT stock_kg FROM waste_materials WHERE name = ? FOR UPDATE', [item.name]);
-            
-            if (rows.length === 0) {
-                throw new Error(`未找到废料: ${item.name}`);
-            }
-            const currentStock = rows[0].stock_kg;
-            if (currentStock < requiredAmount) {
-                throw new Error(`废料库存不足: ${item.name} (需要 ${requiredAmount.toFixed(2)} kg, 现有 ${currentStock.toFixed(2)} kg)`);
-            }
-
-            const newStock = currentStock - requiredAmount;
-            await connection.query('UPDATE waste_materials SET stock_kg = ? WHERE name = ?', [newStock, item.name]);
-        }
-
-        // 2. 创建生产记录
         const record = {
-            id: `record_${new Date().getTime()}`,
+            id: `plan_${new Date().getTime()}`, // 使用 plan_ 前缀以示区分
             product_name: productName,
-            actual_amount: targetAmount,
+            actual_amount: targetAmount, // 修正字段名，之前是 target_amount
             unit: 'kg',
             production_time: new Date(),
-            operator: 'System', // 这里可以根据实际登录用户替换
-            quality_check: '待质检',
-            quality_report: '', // 添加空的质检报告字段
-            materials_used: JSON.stringify(recipe.map(item => ({
-                name: item.name,
-                amount: (targetAmount * item.percentage) / 100
-            })))
+            operator: operator || 'System', // 从前端获取操作员，默认为 System
+            quality_check: '待审批', // 默认状态为待审批
+            materials_used: JSON.stringify(materialsUsed)
         };
-
+        
         await connection.query('INSERT INTO production_records SET ?', record);
 
-        await connection.commit(); // 提交事务
-        res.status(201).json({ code: 20000, message: '生产任务执行成功，库存已更新，生产记录已创建。' });
+        res.status(201).json({ code: 20000, data: { message: '生产计划已创建，等待审批。' } });
+    } catch (error) {
+        console.error('创建生产计划时出错:', error);
+        res.status(500).json({ code: 50000, message: '服务器内部错误，创建生产计划失败。' });
+    } finally {
+        connection.release();
+    }
+});
+
+/**
+ * 审批生产计划并执行库存扣减
+ * POST /api/production/record/:id/approve
+ */
+app.post('/api/production/record/:id/approve', async (req, res) => {
+    const { id } = req.params;
+    const { approver } = req.body; // 获取审批员姓名
+    console.log(`接收到审批生产计划 ${id} 的请求`);
+
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        // 1. 获取并锁定生产记录
+        const [records] = await connection.query('SELECT * FROM production_records WHERE id = ? FOR UPDATE', [id]);
+        if (records.length === 0) {
+            throw new Error('未找到指定的生产计划。');
+        }
+        const record = records[0];
+
+        // 2. 检查状态，防止重复执行
+        if (record.quality_check !== '待审批') {
+            throw new Error(`该生产计划状态为“${record.quality_check}”，无法批准。`);
+        }
+
+        // 防御性检查：确保配方数据存在且不为空
+        if (!record.materials_used) {
+            throw new Error('配方数据丢失或已损坏，无法批准。');
+        }
+
+        let materialsUsed;
+        try {
+            materialsUsed = JSON.parse(record.materials_used);
+        } catch (e) {
+            console.error(`解析配方数据失败 (ID: ${id}):`, e);
+            throw new Error('配方数据格式错误，无法解析。');
+        }
+
+        // 3. 检查库存并准备更新
+        for (const item of materialsUsed) {
+            const [rows] = await connection.query('SELECT stock_kg FROM waste_materials WHERE id = ? FOR UPDATE', [item.id]);
+
+            if (rows.length === 0) {
+                throw new Error(`未找到废料: ${item.name} (ID: ${item.id})`);
+            }
+            const currentStock = rows[0].stock_kg;
+            if (currentStock < item.amount) {
+                throw new Error(`废料库存不足: ${item.name} (需要 ${item.amount} kg, 现有 ${currentStock} kg)`);
+            }
+        }
+
+        // 4. 库存充足，执行扣减
+        for (const item of materialsUsed) {
+            await connection.query('UPDATE waste_materials SET stock_kg = stock_kg - ? WHERE id = ?', [item.amount, item.id]);
+        }
+        
+        // 5. 更新生产记录状态
+        await connection.query(
+            'UPDATE production_records SET quality_check = ?, operator = ? WHERE id = ?',
+            ['已批准', approver || 'N/A', id]
+        );
+
+        await connection.commit();
+        res.json({ code: 20000, data: { message: '生产计划已批准，库存已扣减。' } });
 
     } catch (error) {
-        await connection.rollback(); // 回滚事务
-        console.error('执行生产任务时出错:', error.message);
-        res.status(500).json({ code: 50000, message: error.message || '服务器内部错误，执行生产失败。' });
+        await connection.rollback();
+        console.error(`审批生产计划 ${id} 时出错:`, error.message);
+        res.status(500).json({ code: 50000, message: error.message || '服务器内部错误，审批失败。' });
     } finally {
-        connection.release(); // 释放连接回连接池
+        connection.release();
     }
 });
 

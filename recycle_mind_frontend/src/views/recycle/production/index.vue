@@ -3,25 +3,64 @@
     <!-- 生产记录 -->
     <el-card class="box-card">
       <div slot="header" class="clearfix">
-        <span>生产记录</span>
-        <el-button v-if="!isAdmin" style="float: right; padding: 3px 0" type="text" icon="el-icon-plus" @click="handleRecordCreate">新增记录</el-button>
+        <span>生产管理</span>
       </div>
-      <el-table v-loading="recordListLoading" :data="recordList" border style="width: 100%">
-        <el-table-column prop="id" label="记录ID" width="180" />
-        <el-table-column prop="productName" label="成品名称" />
-        <el-table-column prop="actualAmount" label="实际产量" />
-        <el-table-column prop="unit" label="单位" />
-        <el-table-column prop="productionTime" label="生产时间">
+      <el-table v-loading="recordListLoading" :data="recordList" border fit highlight-current-row style="width: 100%">
+        <el-table-column type="expand">
           <template slot-scope="{row}">
-            <span>{{ row.productionTime | parseTime('{y}-{m}-{d} {h}:{i}') }}</span>
+            <el-card shadow="never" style="margin: 10px;">
+              <div slot="header">
+                <span>配方详情 (计划ID: {{ row.id }})</span>
+              </div>
+              <el-table :data="getMaterials(row.materials_used)" border size="mini">
+                <el-table-column prop="name" label="废料名称" />
+                <el-table-column prop="amount" label="需要用量 (kg)" />
+                <el-table-column prop="percentage" label="配比 (%)">
+                  <template slot-scope="scope">
+                    {{ scope.row.percentage.toFixed(2) }} %
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
           </template>
         </el-table-column>
-        <el-table-column prop="operator" label="操作员" />
-        <el-table-column prop="qualityCheck" label="质检结果" />
-        <el-table-column label="操作" width="150">
+        <el-table-column prop="id" label="计划ID" width="180" />
+        <el-table-column prop="product_name" label="成品名称" />
+        <el-table-column prop="actual_amount" label="计划产量 (kg)" />
+        <el-table-column prop="production_time" label="创建时间" width="160">
+          <template slot-scope="{row}">
+            <span>{{ row.production_time | parseTime('{y}-{m}-{d} {h}:{i}') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="operator" label="创建人/审批人" width="120" />
+        <el-table-column label="状态" width="120" align="center">
+          <template slot-scope="{row}">
+            <el-tag :type="row.quality_check | statusFilter">
+              {{ row.quality_check }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" align="center">
           <template slot-scope="{row, $index}">
-            <el-button v-if="!isAdmin" type="primary" size="mini" @click="handleRecordUpdate(row)">编辑</el-button>
-            <el-button v-if="!isAdmin" type="danger" size="mini" @click="handleRecordDelete(row, $index)">删除</el-button>
+            <el-button
+              v-if="canApprove(row)"
+              type="success"
+              size="mini"
+              :loading="row.loading"
+              @click="handleApprove(row)"
+            >
+              批准生产
+            </el-button>
+            <el-button
+              v-if="isSuperAdmin"
+              type="danger"
+              size="mini"
+              class="delete-btn"
+              @click="handleDelete(row, $index)"
+            >
+              删除
+            </el-button>
+            <span v-if="!canApprove(row) && !isSuperAdmin">-</span>
           </template>
         </el-table-column>
       </el-table>
@@ -30,54 +69,15 @@
 
     </el-card>
 
-    <!-- 生产记录对话框 -->
-    <el-dialog :title="recordTextMap[recordDialogStatus]" :visible.sync="recordDialogFormVisible">
-      <el-form ref="recordDataForm" :rules="recordRules" :model="recordTemp" label-position="left" label-width="120px" style="width: 400px; margin-left:50px;">
-        <el-form-item label="成品名称" prop="productName">
-          <el-input v-model="recordTemp.productName" />
-        </el-form-item>
-        <el-form-item label="实际产量" prop="actualAmount">
-          <el-input-number v-model="recordTemp.actualAmount" :min="0" />
-        </el-form-item>
-        <el-form-item label="单位" prop="unit">
-          <el-input v-model="recordTemp.unit" />
-        </el-form-item>
-        <el-form-item label="生产时间" prop="productionTime">
-          <el-date-picker v-model="recordTemp.productionTime" type="datetime" placeholder="选择日期时间" />
-        </el-form-item>
-        <el-form-item label="操作员" prop="operator">
-          <el-input v-model="recordTemp.operator" />
-        </el-form-item>
-        <el-form-item label="质检结果" prop="qualityCheck">
-          <el-input v-model="recordTemp.qualityCheck" />
-        </el-form-item>
-        <el-form-item label="质检报告" prop="qualityReport">
-          <el-input v-model="recordTemp.qualityReport" type="textarea" />
-        </el-form-item>
-      </el-form>
-      <div slot="footer" class="dialog-footer">
-        <el-button @click="recordDialogFormVisible = false">取消</el-button>
-        <el-button type="primary" @click="recordDialogStatus==='create'?createRecordData():updateRecordData()">确认</el-button>
-      </div>
-    </el-dialog>
-
   </div>
 </template>
 
 <script>
 import {
-  getProductionRecords, addProductionRecord, updateProductionRecord, deleteProductionRecord
+  getProductionRecords, approveProductionRecord, deleteProductionRecord
 } from '@/api/production'
 import { parseTime } from '@/utils'
 import Pagination from '@/components/Pagination' // secondary package based on el-pagination
-
-// 格式化日期为 YYYY-MM-DD HH:mm:ss
-function formatDateTime(date) {
-  if (!date) return ''
-  const d = new Date(date)
-  const pad = n => n < 10 ? '0' + n : n
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
 
 export default {
   name: 'ProductionManagement',
@@ -87,127 +87,116 @@ export default {
       if (!time) return ''
       return parseTime(time, cFormat)
     },
-    planStatusFilter(status) {
+    statusFilter(status) {
       const statusMap = {
-        '已完成': 'success',
-        '进行中': 'primary',
-        '待执行': 'info',
-        '已取消': 'danger'
+        '已批准': 'success',
+        '生产中': 'primary',
+        '待审批': 'warning',
+        '已取消': 'danger',
+        '已完成': 'info'
       }
-      return statusMap[status] || 'warning'
+      return statusMap[status] || 'info'
     }
   },
   data() {
     return {
-      // 生产记录
       recordList: [],
       total: 0,
       recordListLoading: true,
       listQuery: {
         page: 1,
         limit: 20
-      },
-      recordDialogFormVisible: false,
-      recordDialogStatus: '',
-      recordTextMap: { update: '编辑记录', create: '新增记录' },
-      recordTemp: {},
-      recordRules: {
-        productName: [{ required: true, message: '成品名称不能为空', trigger: 'blur' }],
-        actualAmount: [{ required: true, message: '实际产量不能为空', trigger: 'blur' }],
-        unit: [{ required: true, message: '单位不能为空', trigger: 'blur' }],
-        productionTime: [{ required: true, message: '生产时间不能为空', trigger: 'change' }],
-        operator: [{ required: true, message: '操作员不能为空', trigger: 'blur' }],
-        qualityCheck: [{ required: true, message: '质检结果不能为空', trigger: 'blur' }]
       }
     }
   },
   computed: {
-    isAdmin() {
-      return this.$store.getters.roles.includes('admin')
+    isSuperAdmin() {
+      return this.$store.getters.roles.includes('super_admin')
+    },
+    // 假设 'super_admin', 'admin', 'approver' 角色可以审批
+    canApproveRole() {
+      const roles = this.$store.getters.roles
+      return roles.includes('super_admin') || roles.includes('admin') || roles.includes('approver')
+    },
+    username() {
+      return this.$store.getters.name
     }
   },
   created() {
     this.fetchRecords()
   },
   methods: {
-    // --- 生产记录方法 ---
     fetchRecords() {
       this.recordListLoading = true
       getProductionRecords(this.listQuery).then(response => {
-        this.recordList = response.data.items
-        this.total = response.data.total
+        // 在前端为每行数据添加一个 loading 标志
+        this.recordList = response.data.items.map(v => {
+          this.$set(v, 'loading', false) //
+          return v
+        })
+        this.total = response.data.total || response.data.items.length
         this.recordListLoading = false
       })
     },
-    resetRecordTemp() {
-      this.recordTemp = {
-        id: `record_${new Date().getTime()}`,
-        productName: '',
-        actualAmount: 0,
-        unit: 'kg',
-        productionTime: new Date(),
-        operator: '',
-        qualityCheck: '待质检',
-        qualityReport: ''
+    getMaterials(materialsData) {
+      if (typeof materialsData === 'string') {
+        try {
+          return JSON.parse(materialsData);
+        } catch (e) {
+          return [];
+        }
       }
+      return materialsData || [];
     },
-    handleRecordCreate() {
-      this.resetRecordTemp()
-      this.recordDialogStatus = 'create'
-      this.recordDialogFormVisible = true
-      this.$nextTick(() => this.$refs['recordDataForm'].clearValidate())
+    canApprove(row) {
+      return row.quality_check === '待审批' && this.canApproveRole
     },
-    createRecordData() {
-      this.$refs['recordDataForm'].validate(valid => {
-        if (valid) {
-          const postData = {
-            id: this.recordTemp.id,
-            product_name: this.recordTemp.productName,
-            actual_amount: this.recordTemp.actualAmount,
-            unit: this.recordTemp.unit,
-            production_time: formatDateTime(this.recordTemp.productionTime),
-            operator: this.recordTemp.operator,
-            quality_check: this.recordTemp.qualityCheck,
-            quality_report: this.recordTemp.qualityReport,
-            materials_used: this.recordTemp.materialsUsed
-          }
-          addProductionRecord(postData).then(() => {
-            this.recordList.unshift(this.recordTemp)
-            this.recordDialogFormVisible = false
-            this.$notify({ title: '成功', message: '新增记录成功', type: 'success', duration: 2000 })
-          })
-        }
-      })
-    },
-    handleRecordUpdate(row) {
-      this.recordTemp = Object.assign({}, row)
-      this.recordDialogStatus = 'update'
-      this.recordDialogFormVisible = true
-      this.$nextTick(() => this.$refs['recordDataForm'].clearValidate())
-    },
-    updateRecordData() {
-      this.$refs['recordDataForm'].validate(valid => {
-        if (valid) {
-          updateProductionRecord(this.recordTemp.id, this.recordTemp).then(() => {
-            const index = this.recordList.findIndex(v => v.id === this.recordTemp.id)
-            this.recordList.splice(index, 1, this.recordTemp)
-            this.recordDialogFormVisible = false
-            this.$notify({ title: '成功', message: '更新记录成功', type: 'success', duration: 2000 })
-          })
-        }
-      })
-    },
-    handleRecordDelete(row, index) {
-      this.$confirm('此操作将永久删除该记录, 是否继续?', '提示', {
+    handleApprove(row) {
+      this.$confirm(`确定要批准生产计划 ${row.id} 吗？此操作将立即从库存扣减所需废料。`, '提示', {
         confirmButtonText: '确定',
         cancelButtonText: '取消',
         type: 'warning'
       }).then(() => {
+        row.loading = true
+        approveProductionRecord(row.id, { approver: this.username })
+          .then(response => {
+            this.$message({
+              message: response.data.message || '批准成功！',
+              type: 'success'
+            })
+            // 更新该行数据
+            row.quality_check = '已批准'
+            row.operator = this.username
+          })
+          .catch(error => {
+            // 错误处理已在 request.js 中完成，这里不需要重复弹窗
+          })
+          .finally(() => {
+            row.loading = false
+          })
+      }).catch(() => {
+        // 用户取消
+      });
+    },
+    handleDelete(row, index) {
+      this.$confirm(`确定要永久删除生产计划 ${row.id} 吗？此操作不可恢复。`, '危险操作确认', {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'error'
+      }).then(() => {
         deleteProductionRecord(row.id).then(() => {
-          this.recordList.splice(index, 1)
-          this.$notify({ title: '成功', message: '删除记录成功', type: 'success', duration: 2000 })
-        })
-      })
+          this.$message({
+            message: '删除成功！',
+            type: 'success'
+          });
+          this.recordList.splice(index, 1);
+          this.total -= 1;
+        }).catch(err => {
+          // 错误已由请求拦截器处理
+        });
+      }).catch(() => {
+        // 用户取消
+      });
     }
   }
 }
@@ -216,5 +205,8 @@ export default {
 <style scoped>
 .box-card {
   width: 100%;
+}
+.delete-btn {
+  margin-left: 10px;
 }
 </style>
