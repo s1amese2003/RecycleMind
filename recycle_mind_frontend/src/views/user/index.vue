@@ -31,11 +31,6 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="邮箱" min-width="200px" align="center">
-        <template slot-scope="{row}">
-          <span>{{ row.email }}</span>
-        </template>
-      </el-table-column>
       <el-table-column label="状态" class-name="status-col" width="100">
         <template slot-scope="{row}">
           <el-tag :type="row.is_active | statusFilter">
@@ -72,12 +67,6 @@
           <el-select v-model="temp.role" class="filter-item" placeholder="请选择">
             <el-option v-for="item in roleOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="temp.email" />
-        </el-form-item>
-        <el-form-item v-if="dialogStatus==='update'" label="状态">
-          <el-switch v-model="temp.is_active" :active-value="1" :inactive-value="0" />
         </el-form-item>
       </el-form>
       <div slot="footer" class="dialog-footer">
@@ -143,8 +132,7 @@ export default {
       rules: {
         username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
         password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
-        role: [{ required: true, message: '请选择角色', trigger: 'change' }],
-        email: [{ type: 'email', message: '请输入正确的邮箱地址', trigger: ['blur', 'change'] }]
+        role: [{ required: true, message: '请选择角色', trigger: 'change' }]
       }
     }
   },
@@ -167,7 +155,7 @@ export default {
     getList() {
       this.listLoading = true
       getUsers().then(response => {
-        this.list = response.data
+        this.list = response.data.items
         this.listLoading = false
       })
     },

@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const solver = require('javascript-lp-solver');
 const db = require('./db'); // 引入数据库连接池
+const bcrypt = require('bcryptjs'); // 引入 bcrypt 用于密码加密
 
 // 创建 Express 应用
 const app = express();
@@ -533,94 +534,99 @@ app.delete('/api/production/record/:id', async (req, res) => {
 // --- 用户管理 API ---
 /**
  * 获取用户列表
- * GET /api/users
-*/
-app.get('/api/users', async (req, res) => {
-  console.log('接收到获取用户列表的请求');
+ * GET /api/user/list
+ */
+app.get('/api/user/list', async (req, res) => {
+  console.log('接收到获取用户列表请求');
   try {
-    const [users] = await db.query("SELECT id, username, role, email, is_active, created_at FROM users");
+    const [rows] = await db.query('SELECT id, username, role, is_active, created_at FROM users');
     res.json({
-        code: 20000,
-        data: users
+      code: 20000,
+      data: { items: rows }
     });
   } catch (error) {
     console.error('获取用户列表 API 查询数据库时出错:', error);
-    res.status(500).json({
-      code: 50000,
-      message: '服务器内部错误，获取用户列表失败。'
-    });
+    res.status(500).json({ code: 50000, message: '服务器内部错误，获取用户列表失败。' });
   }
 });
 
 /**
  * 新增用户 (密码不加密)
- * POST /api/users
+ * POST /api/user
  */
-app.post('/api/users', async (req, res) => {
-  const { username, password, role, email } = req.body;
-  console.log('接收到新增用户请求:', { username, role, email });
+app.post('/api/user', async (req, res) => {
+  const { username, password, role } = req.body;
+  console.log('接收到创建用户请求:', { username });
 
-  if (!username || !password) {
-    return res.status(400).json({ code: 40001, message: '用户名和密码不能为空。' });
+  if (!username || !password || !role) {
+    return res.status(400).json({ code: 40000, message: '用户名、密码和角色不能为空。' });
   }
 
   try {
+    const hashedPassword = await bcrypt.hash(password, 10);
     const [result] = await db.query(
-      'INSERT INTO users (username, password, role, email) VALUES (?, ?, ?, ?)',
-      [username, password, role, email]
+      'INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+      [username, hashedPassword, role]
     );
+    const newUser = {
+      id: result.insertId,
+      username,
+      role
+    };
     res.status(201).json({
       code: 20000,
-      data: { id: result.insertId, username, role, email }
+      data: newUser
     });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ code: 40901, message: '用户名或邮箱已存在。' });
+      return res.status(409).json({ code: 40009, message: '用户名已存在。' });
     }
-    console.error('新增用户 API 数据库操作出错:', error);
-    res.status(500).json({ code: 50000, message: '服务器内部错误，新增用户失败。' });
+    console.error('创建用户 API 数据库操作出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，创建用户失败。' });
   }
 });
 
 /**
- * 修改用户
- * PUT /api/users/:id
+ * 更新用户信息
+ * PUT /api/user/:id
  */
-app.put('/api/users/:id', async (req, res) => {
+app.put('/api/user/:id', async (req, res) => {
   const { id } = req.params;
-  const { username, role, email, is_active } = req.body;
-  console.log(`接收到修改用户 ${id} 的请求:`, { username, role, email, is_active });
+  const { username, password, role } = req.body;
+  console.log(`接收到更新用户 ${id} 请求:`, { username, role });
 
   try {
-    const fieldsToUpdate = {};
-    if (username !== undefined) fieldsToUpdate.username = username;
-    if (role !== undefined) fieldsToUpdate.role = role;
-    if (email !== undefined) fieldsToUpdate.email = email;
-    if (is_active !== undefined) fieldsToUpdate.is_active = is_active;
+    let query = 'UPDATE users SET username = ?, role = ?';
+    const params = [username, role];
 
-    if (Object.keys(fieldsToUpdate).length === 0) {
-      return res.status(400).json({ code: 40002, message: '没有提供任何需要更新的字段。' });
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      query += ', password = ?';
+      params.push(hashedPassword);
     }
 
-    const setClause = Object.keys(fieldsToUpdate).map(key => `${key} = ?`).join(', ');
-    const values = [...Object.values(fieldsToUpdate), id];
+    query += ' WHERE id = ?';
+    params.push(id);
 
-    const [result] = await db.query(
-      `UPDATE users SET ${setClause} WHERE id = ?`,
-      values
-    );
+    const [result] = await db.query(query, params);
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ code: 40401, message: '未找到指定ID的用户。' });
+      return res.status(404).json({ code: 40400, message: '用户不存在。' });
     }
 
-    res.json({ code: 20000, data: 'success' });
+    // 获取并返回更新后的用户信息
+    const [[updatedUser]] = await db.query('SELECT id, username, role, is_active FROM users WHERE id = ?', [id]);
+    
+    res.json({
+      code: 20000,
+      data: updatedUser
+    });
   } catch (error) {
-     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ code: 40901, message: '用户名或邮箱已存在。' });
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ code: 40009, message: '用户名已存在。' });
     }
-    console.error(`修改用户 ${id} API 数据库操作出错:`, error);
-    res.status(500).json({ code: 50000, message: '服务器内部错误，修改用户失败。' });
+    console.error(`更新用户 ${id} API 数据库操作出错:`, error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，更新用户失败。' });
   }
 });
 
@@ -649,6 +655,28 @@ app.delete('/api/users/:id', async (req, res) => {
     res.status(500).json({ code: 50000, message: '服务器内部错误，删除用户失败。' });
   }
 });
+
+/**
+ * 获取用户列表
+ * GET /api/user/list
+ */
+app.get('/api/user/list', async (req, res) => {
+  console.log('接收到获取用户列表请求');
+  try {
+    const [rows] = await db.query('SELECT id, username, role, is_active, created_at FROM users');
+    res.json({
+      code: 20000,
+      data: { items: rows }
+    });
+  } catch (error) {
+    console.error('获取用户列表 API 查询数据库时出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，获取用户列表失败。' });
+  }
+});
+
+/**
+ * 登录
+ */
 
 
 // --- 配方计算 API ---
