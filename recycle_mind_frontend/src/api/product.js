@@ -105,7 +105,7 @@ export function getMaterials() {
  */
 export function calculateRecipe(data) {
   return request({
-    url: '/calculate',
+    url: '/recipe/calculate',
     method: 'post',
     data
   })

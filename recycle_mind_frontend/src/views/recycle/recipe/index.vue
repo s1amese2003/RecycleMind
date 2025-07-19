@@ -232,7 +232,7 @@
                 align="center"
               >
                 <template slot-scope="{row}">
-                  <span>{{ row.percentage.toFixed(4) }} %</span>
+                  <span>{{ row.percentage.toFixed(3) }} %</span>
                 </template>
               </el-table-column>
               <el-table-column
@@ -329,7 +329,13 @@ export default {
           const req = this.getRequirementForElement(name);
           let status = '无要求';
           if (req) {
-            if (percentage >= req.min && percentage <= req.max) {
+            // 增加精度处理来避免浮点数比较问题
+            const p = parseFloat(percentage.toFixed(3));
+            const min = parseFloat(req.min.toFixed(3));
+            const max = parseFloat(req.max.toFixed(3));
+            const tolerance = 0.0001; // 定义容差
+
+            if (p >= (min - tolerance) && p <= (max + tolerance)) {
               status = '合格';
             } else {
               status = '不合格';
@@ -344,14 +350,13 @@ export default {
       if (source.length === 0) return [];
 
       const finalComposition = {};
-      // 正确的逻辑: 首先计算出有效的总投入重量
-      let totalEffectiveAmount = 0;
+      let totalEffectiveAmount = 0; // 产出物总重量
 
       source.forEach(recipeItem => {
         const materialDetails = this.allWasteMaterials.find(m => m.id === recipeItem.id);
         if (materialDetails) {
           const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
-          totalEffectiveAmount += recipeItem.actual_amount * yieldRate;
+          totalEffectiveAmount += recipeItem.actual_amount * yieldRate; // 累计有效产出
         }
       });
 
@@ -360,25 +365,30 @@ export default {
       source.forEach(recipeItem => {
         const materialDetails = this.allWasteMaterials.find(m => m.id === recipeItem.id);
         if (materialDetails && materialDetails.composition) {
-          const composition = materialDetails.composition; // 已在获取时转换为对象
+          const composition = materialDetails.composition;
           const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
-          const effectiveAmount = recipeItem.actual_amount * yieldRate;
 
           for (const el in composition) {
             if (!finalComposition[el]) finalComposition[el] = 0;
-            // 元素贡献(绝对重量) = (原料投入量 * 出水率) * (元素在原料中的含量百分比)
-            finalComposition[el] += effectiveAmount * (composition[el] / 100);
+            // 元素贡献(kg) = 原料投入量(kg) * 出水率 * 元素在原料中的含量(%)
+            finalComposition[el] += recipeItem.actual_amount * yieldRate * (composition[el] / 100);
           }
         }
       });
 
-      // 将绝对含量转换为百分比，使用正确的总有效重量作为分母
+      // 将元素的绝对重量(kg)转换为在最终成品中的百分比
       const tableData = Object.entries(finalComposition).map(([name, absoluteAmount]) => {
         const percentage = (absoluteAmount / totalEffectiveAmount) * 100;
         const req = this.getRequirementForElement(name);
         let status = '无要求';
         if (req) {
-          if (percentage >= req.min && percentage <= req.max) {
+          // 增加精度处理来避免浮点数比较问题
+          const p = parseFloat(percentage.toFixed(3));
+          const min = parseFloat(req.min.toFixed(3));
+          const max = parseFloat(req.max.toFixed(3));
+          const tolerance = 0.0001; // 定义容差
+
+          if (p >= (min - tolerance) && p <= (max + tolerance)) {
             status = '合格';
           } else {
             status = '不合格';
@@ -489,7 +499,7 @@ export default {
               }, {}),
               excluded_ids: this.excludedMaterials,
               must_select_ids: this.mustSelectMaterials,
-              enable_safety_margin: this.enableSafetyMargin // 传递开关状态
+              enable_safety_margin: false // 禁用安全余量
           }
           const { data } = await calculateRecipe(payload)
           this.recipeResult = data
@@ -509,23 +519,17 @@ export default {
         this.editableRecipe = [];
         return;
       }
-      const totalRecommendedAmount = this.targetAmount;
+      // 后端返回的是基于1kg产成品的配方，我们需要根据目标产量进行缩放
+      const scale = this.targetAmount;
+
       this.editableRecipe = this.recipeResult.recipe.map(item => {
         const materialDetails = this.allWasteMaterials.find(m => m.id === item.id);
-        const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
-        // 注意：后端的百分比已经是考虑了出水率之后的比例, 代表对最终1kg成品的贡献比例
-        // 所以实际用量需要反推出水率的影响
-        // const actual_amount = (totalRecommendedAmount * item.percentage / 100) / yieldRate;
-
-        // 经过后端逻辑修改后，返回的percentage已经是投入原料的百分比了，不再需要除以出水率
-        // 但为了安全，这里的逻辑应该和后端返回的数据结构强相关
-        // 假设后端 percentage 就是直接的重量百分比
-        const actual_amount = totalRecommendedAmount * item.percentage / 100;
+        const actual_amount = item.weight * scale; // weight是1kg成品所需原料(kg)
 
         return {
           ...item,
+          // 根据目标产量，等比放大各项数值
           actual_amount: parseFloat(actual_amount.toFixed(2)),
-          // 成本也需要重新计算
           cost: actual_amount * (parseFloat(materialDetails.unit_price) || 0)
         };
       });
