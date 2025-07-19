@@ -372,7 +372,7 @@ export default {
       return tableData;
     }
   },
-  activated() {
+  created() {
     this.fetchProducts()
     this.fetchAllWasteMaterials()
   },

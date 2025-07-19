@@ -295,8 +295,10 @@ export default {
       }
     }
   },
-  created() {
+  activated() {
     this.getList()
+  },
+  created() {
     this.defaultElements = standardElements.map(name => ({ name, percentage: 0 }))
   },
   methods: {

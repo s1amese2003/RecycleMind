@@ -80,7 +80,7 @@ import { parseTime } from '@/utils'
 import Pagination from '@/components/Pagination' // secondary package based on el-pagination
 
 export default {
-  name: 'ProductionManagement',
+  name: 'Production',
   components: { Pagination },
   filters: {
     parseTime(time, cFormat) {
@@ -122,8 +122,10 @@ export default {
       return this.$store.getters.name
     }
   },
-  created() {
+  activated() {
     this.fetchRecords()
+  },
+  created() {
   },
   methods: {
     fetchRecords() {
