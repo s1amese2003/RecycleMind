@@ -657,8 +657,8 @@ app.delete('/api/users/:id', async (req, res) => {
  * POST /api/recipe/calculate
  */
 app.post('/api/recipe/calculate', async (req, res) => {
-    const { requirements, excluded_ids, enable_safety_margin } = req.body;
-    console.log('接收到配方计算请求:', { requirements, excluded_ids, enable_safety_margin });
+    const { requirements, excluded_ids, must_select_ids, enable_safety_margin } = req.body;
+    console.log('接收到配方计算请求:', { requirements, excluded_ids, must_select_ids, enable_safety_margin });
 
     if (!requirements || Object.keys(requirements).length === 0) {
         return res.status(400).json({ code: 40001, message: '产品需求参数不能为空。' });
@@ -692,18 +692,27 @@ app.post('/api/recipe/calculate', async (req, res) => {
         console.log('指定元素:', specifiedElements);
         console.log('其他元素:', otherElements);
         
-        // 2.2 初始化模型
+        // 2.2 定义模型：最小化成本
         const model = {
             optimize: "cost",
             opType: "min",
             constraints: {
-                total_percentage: { equal: 1 }
+                total_percentage: { equal: 1 } // 总比例必须为1
             },
             variables: {},
+            ints: {} // 记录需要为整数的变量，这里我们先不设置
         };
 
-        // 安全余量系数 (例如, 5%)
-        const safetyFactor = 0.05;
+        // 如果有必选废料，为每个必选废料添加一个约束，确保其使用比例大于一个很小的值
+        if (must_select_ids && must_select_ids.length > 0) {
+            must_select_ids.forEach(id => {
+                const variableName = `mat_${id}`;
+                model.constraints[variableName] = { min: 0.00001 }; // 设置一个很小的下限，确保被选中
+            });
+        }
+
+        // 2.3 设置安全余量
+        const safetyMargin = enable_safety_margin ? 0.005 : 0; // 0.5% 的安全余量
 
         // 2.3 添加主要元素的约束
         specifiedElements.forEach(el => {
@@ -716,8 +725,8 @@ app.post('/api/recipe/calculate', async (req, res) => {
                     const range = max - min;
                     // 如果范围有效，则应用安全余量；否则保持原样以避免无效约束
                     if (range > 0) {
-                        min = min * (1 + safetyFactor);
-                        max = max * (1 - safetyFactor);
+                        min = min * (1 + safetyMargin);
+                        max = max * (1 - safetyMargin);
                     }
                     console.log(`应用安全余量后 ${el} 的范围: min=${min}, max=${max}`);
                 }

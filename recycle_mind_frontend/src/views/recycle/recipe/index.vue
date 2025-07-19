@@ -75,6 +75,23 @@
               </div>
             </el-form-item>
 
+            <el-form-item label="必选废料（必须选）">
+              <el-select
+                v-model="mustSelectMaterials"
+                multiple
+                filterable
+                placeholder="可选择一种或多种废料进行必选"
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="item in allWasteMaterials"
+                  :key="item.id"
+                  :label="item.name"
+                  :value="item.id"
+                />
+              </el-select>
+            </el-form-item>
+
             <el-form-item label="排除废料（不可选）">
               <el-select
                 v-model="excludedMaterials"
@@ -279,6 +296,7 @@ export default {
       products: [],
       allWasteMaterials: [],
       excludedMaterials: [],
+      mustSelectMaterials: [],
       selectedProductId: null,
       targetAmount: 1000, // 默认目标产量
       requirement: {
@@ -470,6 +488,7 @@ export default {
                   return acc
               }, {}),
               excluded_ids: this.excludedMaterials,
+              must_select_ids: this.mustSelectMaterials,
               enable_safety_margin: this.enableSafetyMargin // 传递开关状态
           }
           const { data } = await calculateRecipe(payload)
