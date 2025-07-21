@@ -75,23 +75,6 @@
               </div>
             </el-form-item>
 
-            <el-form-item label="必选废料（必须选）">
-              <el-select
-                v-model="mustSelectMaterials"
-                multiple
-                filterable
-                placeholder="可选择一种或多种废料进行必选"
-                style="width: 100%;"
-              >
-                <el-option
-                  v-for="item in allWasteMaterials"
-                  :key="item.id"
-                  :label="item.name + ' (库存: ' + item.stock_kg + ' kg)'"
-                  :value="item.id"
-                />
-              </el-select>
-            </el-form-item>
-
             <el-form-item label="排除废料（不可选）">
               <el-select
                 v-model="excludedMaterials"
@@ -107,6 +90,47 @@
                   :value="item.id"
                 />
               </el-select>
+            </el-form-item>
+
+            <el-form-item label="定量投入废料">
+              <div v-for="(fixedItem, index) in fixedAmountMaterials" :key="fixedItem.id || index" class="fixed-material-item">
+                <el-row :gutter="10">
+                  <el-col :span="14">
+                    <el-select
+                      v-model="fixedItem.id"
+                      placeholder="选择废料"
+                      filterable
+                      style="width: 100%;"
+                      @change="onFixedMaterialChange(fixedItem)"
+                    >
+                      <el-option
+                        v-for="item in availableWasteMaterialsForFixed"
+                        :key="item.id"
+                        :label="item.name + ' (库存: ' + item.stock_kg + ' kg)'"
+                        :value="item.id"
+                        :disabled="isFixedMaterialSelected(item.id, fixedItem.id)"
+                      />
+                    </el-select>
+                  </el-col>
+                  <el-col :span="8">
+                    <el-input-number
+                      v-model="fixedItem.amount"
+                      :min="0"
+                      :precision="2"
+                      size="small"
+                      controls-position="right"
+                      placeholder="输入用量(kg)"
+                      style="width: 100%"
+                    />
+                  </el-col>
+                  <el-col :span="2">
+                    <el-button type="danger" icon="el-icon-delete" circle size="mini" @click="removeFixedMaterial(index)" />
+                  </el-col>
+                </el-row>
+              </div>
+              <el-button type="primary" icon="el-icon-plus" size="small" @click="addFixedMaterial" :disabled="availableWasteMaterialsForFixed.length === 0">
+                添加定量废料
+              </el-button>
             </el-form-item>
           </el-form>
         </el-card>
@@ -296,7 +320,6 @@ export default {
       products: [],
       allWasteMaterials: [],
       excludedMaterials: [],
-      mustSelectMaterials: [],
       selectedProductId: null,
       targetAmount: 1000, // 默认目标产量
       requirement: {
@@ -312,7 +335,8 @@ export default {
         message: '',
         type: 'info'
       },
-      enableSafetyMargin: true // 默认开启安全余量
+      enableSafetyMargin: true, // 默认开启安全余量
+      fixedAmountMaterials: [] // 新增：定量投入废料数组
     }
   },
   computed: {
@@ -398,6 +422,10 @@ export default {
       }).sort((a, b) => b.percentage - a.percentage); // 按含量降序排序
 
       return tableData;
+    },
+    availableWasteMaterialsForFixed() {
+      const selectedFixedIds = new Set(this.fixedAmountMaterials.map(item => item.id).filter(id => id !== null));
+      return this.allWasteMaterials.filter(material => !selectedFixedIds.has(material.id));
     }
   },
   created() {
@@ -489,6 +517,24 @@ export default {
       })
       this.requirement.elements = elements
     },
+    addFixedMaterial() {
+      this.fixedAmountMaterials.push({ id: null, amount: 0 });
+    },
+    removeFixedMaterial(index) {
+      this.fixedAmountMaterials.splice(index, 1);
+    },
+    onFixedMaterialChange(fixedItem) {
+      // 确保选择的废料不重复
+      const count = this.fixedAmountMaterials.filter(item => item.id === fixedItem.id).length;
+      if (count > 1) {
+        this.$message.warning('该废料已被选择，请选择其他废料或删除重复项。');
+        fixedItem.id = null; // 重置选择
+      }
+    },
+    isFixedMaterialSelected(materialId, currentFixedItemId) {
+      // 检查除了当前正在编辑的项之外，该废料是否已经被选择
+      return this.fixedAmountMaterials.some(item => item.id === materialId && item.id !== currentFixedItemId);
+    },
     async handleCalculate() {
       this.calculating = true
       try {
@@ -498,9 +544,9 @@ export default {
                   return acc
               }, {}),
               excluded_ids: this.excludedMaterials,
-              must_select_ids: this.mustSelectMaterials,
               enable_safety_margin: this.enableSafetyMargin, // 传递安全余量状态
-              target_amount: this.targetAmount // 传递目标产量
+              target_amount: this.targetAmount, // 传递目标产量
+              fixed_amount_materials: this.fixedAmountMaterials.filter(item => item.id !== null && item.amount > 0) // 传递定量投入的废料
           }
           const { data } = await calculateRecipe(payload)
           this.recipeResult = data

@@ -685,8 +685,8 @@ app.get('/api/user/list', async (req, res) => {
  * POST /api/recipe/calculate
  */
 app.post('/api/recipe/calculate', async (req, res) => {
-    const { requirements, excluded_ids, must_select_ids, enable_safety_margin, target_amount } = req.body;
-    console.log('接收到配方计算请求:', { requirements, excluded_ids, must_select_ids, enable_safety_margin, target_amount });
+    const { requirements, excluded_ids, enable_safety_margin, target_amount, fixed_amount_materials } = req.body;
+    console.log('接收到配方计算请求:', { requirements, excluded_ids, enable_safety_margin, target_amount, fixed_amount_materials });
 
     if (!requirements || Object.keys(requirements).length === 0) {
         return res.status(400).json({ code: 40001, message: '产品需求参数不能为空。' });
@@ -699,14 +699,65 @@ app.post('/api/recipe/calculate', async (req, res) => {
         // 1. 从数据库获取所有废料信息 (包括实际单价)
         let query = 'SELECT *, (unit_price / (yield_rate / 100)) as actual_unit_price FROM waste_materials WHERE stock_kg > 0';
         const queryParams = [];
+        
+        // 排除掉被定量投入的废料ID
+        const fixedMaterialIds = fixed_amount_materials ? fixed_amount_materials.map(item => item.id) : [];
         if (excluded_ids && excluded_ids.length > 0) {
           query += ' AND id NOT IN (?)';
           queryParams.push(excluded_ids);
         }
-        
+        if (fixedMaterialIds.length > 0) {
+            if (queryParams.length === 0) {
+                query += ' AND id NOT IN (?)';
+            } else {
+                query += ' AND id NOT IN (?)';
+            }
+            queryParams.push(fixedMaterialIds);
+        }
+
+        // TODO: 如果有必选废料，确保它们不被排除
+        // if (must_select_ids && must_select_ids.length > 0) {
+        //     query += ' AND id IN (?)';
+        //     queryParams.push(must_select_ids);
+        // }
+
         const [wasteMaterials] = await db.query(query, queryParams);
-        if (wasteMaterials.length === 0) {
-            return res.status(500).json({ code: 50001, message: '符合条件的废料库存为空，无法进行计算。' });
+        
+        // 获取所有废料，包括被定量投入的，用于后续查找详情
+        const [allWasteMaterialsFromDb] = await db.query('SELECT *, (unit_price / (yield_rate / 100)) as actual_unit_price FROM waste_materials');
+        const getMaterialDetails = (id) => allWasteMaterialsFromDb.find(m => m.id === id);
+
+        if (wasteMaterials.length === 0 && (!fixed_amount_materials || fixed_amount_materials.length === 0)) {
+            return res.status(500).json({ code: 50001, message: '符合条件的废料库存为空或未指定定量废料，无法进行计算。' });
+        }
+
+        // 计算定量投入废料的总贡献
+        let totalFixedYield = 0; // 定量投入废料的总有效产出量
+        const fixedMaterialsContribution = {}; // 定量投入废料对各元素的总贡献
+        let totalFixedCost = 0; // 定量投入废料的总成本
+
+        if (fixed_amount_materials && fixed_amount_materials.length > 0) {
+            for (const fixedItem of fixed_amount_materials) {
+                const materialDetails = getMaterialDetails(fixedItem.id);
+                if (!materialDetails) {
+                    return res.status(400).json({ code: 40002, message: `未找到定量废料ID: ${fixedItem.id}` });
+                }
+                if (materialDetails.stock_kg < fixedItem.amount) {
+                    return res.status(400).json({ code: 40003, message: `定量废料 [${materialDetails.name}] 投入量 (${fixedItem.amount} kg) 超出库存 (${materialDetails.stock_kg} kg)。` });
+                }
+
+                const composition = (typeof materialDetails.composition === 'string' ? JSON.parse(materialDetails.composition) : materialDetails.composition) || {};
+                const yieldRate = (parseFloat(materialDetails.yield_rate) || 100) / 100;
+                const actualAmount = fixedItem.amount; // 这是总产量下的实际投入量
+
+                totalFixedYield += actualAmount * yieldRate; // 累加有效产出
+                totalFixedCost += actualAmount * (parseFloat(materialDetails.unit_price) || 0);
+
+                for (const el in composition) {
+                    if (!fixedMaterialsContribution[el]) fixedMaterialsContribution[el] = 0;
+                    fixedMaterialsContribution[el] += actualAmount * yieldRate * (composition[el] / 100); // 元素贡献(kg)
+                }
+            }
         }
 
         // 2. 构建线性规划模型
@@ -716,6 +767,15 @@ app.post('/api/recipe/calculate', async (req, res) => {
             const composition = (typeof m.composition === 'string' ? JSON.parse(m.composition) : m.composition) || {};
             Object.keys(composition).forEach(el => allElementsInWaste.add(el));
         });
+        // 将定量投入废料中的元素也加入到 allElementsInWaste 中
+        if (fixed_amount_materials && fixed_amount_materials.length > 0) {
+            for (const fixedItem of fixed_amount_materials) {
+                const materialDetails = getMaterialDetails(fixedItem.id);
+                const composition = (typeof materialDetails.composition === 'string' ? JSON.parse(materialDetails.composition) : materialDetails.composition) || {};
+                Object.keys(composition).forEach(el => allElementsInWaste.add(el));
+            }
+        }
+
         const otherElements = [...allElementsInWaste].filter(el => !specifiedElements.includes(el));
         
         const model = {
@@ -725,17 +785,15 @@ app.post('/api/recipe/calculate', async (req, res) => {
             variables: {},
         };
 
-        // 2.1 约束: 每种废料的使用量不能超过其库存 (转换为1kg成品所需的量)
+        // 2.1 约束: 每种非定量废料的使用量不能超过其库存 (转换为1kg成品所需的量)
         wasteMaterials.forEach(material => {
             const variableName = `mat_${material.id}`; // 变量代表该原料的使用重量(kg)
-            // 注意：这里的 max 约束是基于 1kg 成品的需求，所以需要将总库存除以目标产量
-            // 以确保计算出的每公斤成品所需原料量在放大后不超过总库存
             model.constraints[`stock_${material.id}`] = { max: material.stock_kg / finalTargetAmount };
         });
 
         // 2.2 约束: 总产出量为1kg (所有计算都归一化到1kg成品)
-        // SUM(废料i用量 * 废料i出水率) = 1
-        model.constraints.total_yield = { equal: 1 };
+        // SUM(非定量废料i用量 * 废料i出水率) = 1 - (定量废料总有效产出 / 目标产量)
+        model.constraints.total_yield = { equal: 1 - (totalFixedYield / finalTargetAmount) };
 
         // 2.3 约束: 各元素在最终成品中的占比
         specifiedElements.forEach(el => {
@@ -745,23 +803,38 @@ app.post('/api/recipe/calculate', async (req, res) => {
                 const constraint = {};
                 // 元素含量(kg) = SUM(废料i用量 * 废料i出水率 * 废料i中元素j的含量)
                 // 由于总产出量归一化为1kg，所以这里的min/max也是对应1kg成品中的含量(kg)
-                if (min > 0) constraint.min = min / 100;
-                if (max > 0 && max >= min) constraint.max = max / 100;
-                 if (Object.keys(constraint).length > 0) model.constraints[el] = constraint;
+                // 同时需要减去定量投入废料的贡献，再除以目标产量，转换为每公斤成品的贡献
+                const minVal = (min / 100) - (fixedMaterialsContribution[el] || 0) / finalTargetAmount;
+                const maxVal = (max / 100) - (fixedMaterialsContribution[el] || 0) / finalTargetAmount;
+                
+                if (minVal > 0) constraint.min = minVal; else constraint.min = 0; // 确保最小值为非负
+                if (maxVal > 0 && maxVal >= minVal) constraint.max = maxVal;
+                if (Object.keys(constraint).length > 0) model.constraints[el] = constraint;
             }
         });
         
-        // 2.4 可选约束
+        // 2.4 可选约束 (others 和 total_others)
         if (requirements.others && requirements.others.max > 0) {
             otherElements.forEach(el => {
-                model.constraints[`other_${el}`] = { max: requirements.others.max / 100 };
+                const maxVal = (requirements.others.max / 100) - (fixedMaterialsContribution[el] || 0) / finalTargetAmount;
+                if (maxVal > 0) {
+                    model.constraints[`other_${el}`] = { max: maxVal };
+                } else {
+                    model.constraints[`other_${el}`] = { max: 0 }; // 如果定量投入已经超标，则设为0
+                }
             });
         }
         if (requirements.total_others && requirements.total_others.max > 0) {
-            model.constraints.total_others_sum = { max: requirements.total_others.max / 100 };
+            const maxVal = (requirements.total_others.max / 100) - 
+                           (otherElements.reduce((sum, el) => sum + (fixedMaterialsContribution[el] || 0), 0) / finalTargetAmount);
+            if (maxVal > 0) {
+                model.constraints.total_others_sum = { max: maxVal };
+            } else {
+                model.constraints.total_others_sum = { max: 0 };
+            }
         }
 
-        // 2.5 为每个废料创建变量及其对各约束的贡献
+        // 2.5 为每个非定量废料创建变量及其对各约束的贡献
         wasteMaterials.forEach(material => {
             const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
             const yieldRate = (parseFloat(material.yield_rate) || 100) / 100;
@@ -799,34 +872,58 @@ app.post('/api/recipe/calculate', async (req, res) => {
 
         // 4. 处理并返回结果
         if (results.feasible) {
-            const totalInputWeight = Object.keys(results)
-                .filter(key => key.startsWith('mat_'))
-                .reduce((sum, key) => sum + results[key], 0);
+            // 4.1 格式化配方结果
+            const recipe = [];
 
+            // 添加定量投入的废料到配方中
+            if (fixed_amount_materials && fixed_amount_materials.length > 0) {
+                for (const fixedItem of fixed_amount_materials) {
+                    const materialDetails = getMaterialDetails(fixedItem.id);
+                    recipe.push({
+                        id: materialDetails.id,
+                        name: materialDetails.name,
+                        storage_area: materialDetails.storage_area,
+                        percentage: 0, // 初始设置为0，后面会重新计算
+                        weight: fixedItem.amount / finalTargetAmount, // 转换为每公斤成品所需量
+                        cost: (fixedItem.amount / finalTargetAmount) * (parseFloat(materialDetails.unit_price) || 0),
+                        yield_rate: materialDetails.yield_rate
+                    });
+                }
+            }
+
+            // 添加线性规划计算出的废料到配方中
+            Object.keys(results)
+                .filter(key => key.startsWith('mat_'))
+                .forEach(key => {
+                    const materialId = parseInt(key.substring(4));
+                    const material = getMaterialDetails(materialId);
+                    const weight = results[key]; // kg (每公斤成品所需)
+                    
+                    if (weight > 0.001) { // 过滤掉占比极小的
+                        recipe.push({
+                            id: material.id,
+                            name: material.name,
+                            storage_area: material.storage_area,
+                            percentage: 0, // 初始设置为0，后面会重新计算
+                            weight: weight,
+                            cost: weight * (parseFloat(material.unit_price) || 0),
+                            yield_rate: material.yield_rate
+                        });
+                    }
+                });
+
+            if (recipe.length === 0) {
+                return res.status(500).json({ code: 50003, message: '计算结果异常，未生成任何配方。' });
+            }
+
+            // 重新计算总投入量和各项百分比
+            const totalInputWeight = recipe.reduce((sum, item) => sum + item.weight, 0);
             if (totalInputWeight === 0) {
                  return res.status(500).json({ code: 50003, message: '计算结果异常，总投入量为0。' });
             }
-            
-            // 4.1 格式化配方结果
-            const recipe = Object.keys(results)
-                .filter(key => key.startsWith('mat_'))
-                .map(key => {
-                    const materialId = parseInt(key.substring(4));
-                    const material = wasteMaterials.find(m => m.id === materialId);
-                    const weight = results[key]; // kg
-                    const percentage = (weight / totalInputWeight) * 100;
-                    
-                    return {
-                        id: material.id,
-                        name: material.name,
-                        storage_area: material.storage_area,
-                        percentage: percentage,
-                        weight: weight,
-                        cost: weight * (parseFloat(material.unit_price) || 0),
-                        yield_rate: material.yield_rate
-                    };
-                })
-                .filter(item => item.percentage > 0.001); // 过滤掉占比极小的
+            recipe.forEach(item => {
+                item.percentage = (item.weight / totalInputWeight) * 100;
+            });
 
             // 4.2 计算最终成品成分
             const finalComposition = {};
@@ -834,7 +931,7 @@ app.post('/api/recipe/calculate', async (req, res) => {
             otherElements.forEach(el => finalComposition[el] = 0);
 
             recipe.forEach(item => {
-                const material = wasteMaterials.find(m => m.id === item.id);
+                const material = getMaterialDetails(item.id);
                 const composition = (typeof material.composition === 'string' ? JSON.parse(material.composition) : material.composition) || {};
                 const yieldRate = (parseFloat(material.yield_rate) || 100) / 100;
                 
@@ -863,7 +960,7 @@ app.post('/api/recipe/calculate', async (req, res) => {
                 }
             });
         } else {
-            res.status(500).json({ code: 50002, message: '无法找到满足条件的配方，请检查产品要求或废料库存。' });
+            res.status(500).json({ code: 50002, message: '无法找到满足条件的配方，请检查产品要求、废料库存或定量投入废料。' });
         }
 
     } catch (error) {
