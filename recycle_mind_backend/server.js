@@ -16,6 +16,31 @@ app.use(cors());
 // 2. 使用 express.json() 中间件来解析请求体中的 JSON 数据
 app.use(express.json());
 
+// 认证中间件
+const authenticateToken = async (req, res, next) => {
+  const token = req.headers['x-token'];
+  if (!token) {
+    return res.status(401).json({ code: 40100, message: '缺少认证 token。' });
+  }
+
+  if (token.startsWith('mock-') && token.endsWith('-token')) {
+    const username = token.substring(5, token.length - 6);
+    try {
+      const [users] = await db.query('SELECT * FROM users WHERE username = ?', [username]);
+      if (users.length === 0) {
+        return res.status(401).json({ code: 40101, message: '无效的 token 或用户不存在。' });
+      }
+      req.user = { username: users[0].username, roles: [users[0].role] }; // 将用户信息添加到请求对象
+      next();
+    } catch (error) {
+      console.error('认证中间件数据库查询出错:', error);
+      return res.status(500).json({ code: 50000, message: '服务器内部错误，认证失败。' });
+    }
+  } else {
+    return res.status(401).json({ code: 40101, message: '无效的 token 格式。' });
+  }
+};
+
 /*
 --  请在您的 MySQL 数据库 'recycle_mind' 中执行以下 SQL 语句来为 'waste_materials' 表添加新字段：
 ALTER TABLE waste_materials
@@ -104,6 +129,13 @@ app.post('/api/user/logout', (req, res) => {
   console.log('接收到登出请求');
   res.json({ code: 20000, data: 'success' });
 });
+
+// 将认证中间件应用于所有需要认证的路由
+app.use('/api/waste-material', authenticateToken);
+app.use('/api/products', authenticateToken);
+app.use('/api/recipe', authenticateToken);
+app.use('/api/production', authenticateToken);
+app.use('/api/user-manage', authenticateToken); // 如果有用户管理接口，也加上
 
 // --- 废料管理 API ---
 /**
@@ -439,22 +471,36 @@ app.get('/api/transaction/list', async (req, res) => {
  * 获取生产记录列表
  * GET /api/production/record/list
  */
-app.get('/api/production/record/list', async (req, res) => {
+app.get('/api/production/record/list', authenticateToken, async (req, res) => {
   console.log('接收到获取生产记录列表的请求');
-  const { page = 1, limit = 20 } = req.query;
+  const { page = 1, limit = 20, is_finished } = req.query;
 
   try {
-    const whereClause = "WHERE id LIKE 'plan_%'";
+    let whereClause = "WHERE id LIKE 'plan_%'";
+    const queryValues = []; // 用于所有 '?' 占位符的值
+
+    if (typeof is_finished !== 'undefined') {
+      whereClause += ' AND is_finished = ?';
+      queryValues.push(is_finished === 'true' ? 1 : 0); // 将字符串转换为布尔值对应的数字
+    }
 
     // 获取总数
-    const countQuery = `SELECT COUNT(*) as total FROM production_records ${whereClause}`;
-    const [countRows] = await db.query(countQuery);
+    // 为了安全起见，这里为 countQuery 使用单独的参数数组
+    const countWhereClause = `WHERE id LIKE 'plan_%'${typeof is_finished !== 'undefined' ? ' AND is_finished = ?' : ''}`;
+    const countQueryParams = typeof is_finished !== 'undefined' ? [is_finished === 'true' ? 1 : 0] : [];
+    const countQuery = `SELECT COUNT(*) as total FROM production_records ${countWhereClause}`;
+    const [countRows] = await db.query(countQuery, countQueryParams);
     const total = countRows[0].total;
 
     // 获取分页数据
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
     const dataQuery = `SELECT * FROM production_records ${whereClause} ORDER BY production_time DESC LIMIT ? OFFSET ?`;
-    const [rows] = await db.query(dataQuery, [parseInt(limit, 10), offset]);
+    
+    // 将 LIMIT 和 OFFSET 值添加到 queryValues
+    queryValues.push(parseInt(limit, 10));
+    queryValues.push(offset);
+
+    const [rows] = await db.query(dataQuery, queryValues);
 
     res.json({
       code: 20000,
@@ -1075,22 +1121,60 @@ app.post('/api/production/record/:id/approve', async (req, res) => {
         
         // 5. 更新生产记录状态
         await connection.query(
-            'UPDATE production_records SET quality_check = ?, operator = ? WHERE id = ?',
+            'UPDATE production_records SET quality_check = ?, approver = ?, approval_time = NOW() WHERE id = ?',
             ['已批准', approver || 'N/A', id]
         );
 
         await connection.commit();
-        res.json({ code: 20000, data: { message: '生产计划已批准，库存已扣减。' } });
+        res.json({ code: 20000, data: { message: `生产计划 ${id} 已成功审批并执行库存扣减。` } });
 
     } catch (error) {
         await connection.rollback();
-        console.error(`审批生产计划 ${id} 时出错:`, error.message);
+        console.error(`审批生产计划 ${id} 时出错:`, error);
         res.status(500).json({ code: 50000, message: error.message || '服务器内部错误，审批失败。' });
     } finally {
         connection.release();
     }
 });
 
+/**
+ * 完成生产计划并更新实际产量
+ * PUT /api/production/record/:id/complete
+ */
+app.put('/api/production/record/:id/complete', async (req, res) => {
+    const { id } = req.params;
+    const { actual_production_amount_kg, is_finished } = req.body;
+    const { username, roles } = req.user; // 假设 req.user 中包含认证后的用户信息
+
+    console.log(`接收到完成生产计划 ${id} 的请求:`, { actual_production_amount_kg, is_finished });
+
+    if (!roles || (!roles.includes('super_admin') && !roles.includes('approver'))) {
+        return res.status(403).json({ code: 40301, message: '只有超级管理员或审批员才能操作此功能。' });
+    }
+
+    if (typeof is_finished !== 'boolean' || typeof actual_production_amount_kg === 'undefined') {
+        return res.status(400).json({ code: 40001, message: '缺少必要的参数: is_finished (boolean) 和 actual_production_amount_kg (number)。' });
+    }
+
+    try {
+        const [result] = await db.query(
+            'UPDATE production_records SET is_finished = ?, actual_production_amount_kg = ? WHERE id = ?',
+            [is_finished, actual_production_amount_kg, id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ code: 40401, message: '未找到指定ID的生产计划。' });
+        }
+
+        res.json({ code: 20000, data: { message: `生产计划 ${id} 已成功更新。` } });
+
+    } catch (error) {
+        console.error(`完成生产计划 ${id} 时出错:`, error);
+        res.status(500).json({ code: 50000, message: '服务器内部错误，更新失败。' });
+    }
+});
+
+// --- 数据导入导出 API ---
 
 // --- 启动服务器 ---
 app.listen(port, async () => {

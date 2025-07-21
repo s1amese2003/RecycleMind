@@ -35,11 +35,11 @@ export function deleteProductionPlan(id) {
 
 // --- 生产记录 API ---
 
-export function getProductionRecords(params) {
+export function getProductionRecords(query) {
   return request({
     url: '/production/record/list',
     method: 'get',
-    params
+    params: query
   })
 }
 
@@ -78,6 +78,14 @@ export function approveProductionRecord(id, data) {
   return request({
     url: `/production/record/${id}/approve`,
     method: 'post',
+    data
+  })
+}
+
+export function completeProductionRecord(id, data) {
+  return request({
+    url: `/production/record/${id}/complete`,
+    method: 'put',
     data
   })
 }
