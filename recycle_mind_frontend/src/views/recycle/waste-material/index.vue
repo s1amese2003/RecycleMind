@@ -453,8 +453,15 @@ export default {
       this.downloadLoading = true
       import('@/vendor/Export2Excel').then(excel => {
         try {
-          const tHeader = ['废料编号', '废料名称', '存放区域', '库存(kg)', '单价(元/kg)', '出水率(%)', '实际单价(元/kg)', '成分构成']
-          const filterVal = ['id', 'name', 'storage_area', 'stock_kg', 'unit_price', 'yield_rate', 'actual_unit_price', 'composition']
+          let tHeader = ['废料编号', '废料名称', '存放区域', '库存(kg)', '出水率(%)', '成分构成'];
+          let filterVal = ['id', 'name', 'storage_area', 'stock_kg', 'yield_rate', 'composition'];
+
+          // 如果是超级管理员，则包含单价和实际单价
+          if (this.isSuperAdmin) {
+            tHeader.splice(4, 0, '单价(元/kg)', '实际单价(元/kg)');
+            filterVal.splice(4, 0, 'unit_price', 'actual_unit_price');
+          }
+
           const data = this.formatJson(filterVal, this.list)
           excel.export_json_to_excel({
             header: tHeader,
