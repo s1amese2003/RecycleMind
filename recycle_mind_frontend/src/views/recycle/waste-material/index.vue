@@ -135,7 +135,7 @@
           <el-input-number v-model="temp.stock_kg" :min="0" />
         </el-form-item>
 
-        <el-form-item label="单价(元/kg)" prop="unit_price">
+        <el-form-item label="单价(元/kg)" prop="unit_price" v-if="!isAdmin">
           <el-input-number v-model="temp.unit_price" :min="0" :precision="2" />
         </el-form-item>
 
@@ -143,7 +143,7 @@
           <el-input-number v-model="temp.yield_rate" :min="0" :max="100" :precision="2" />
         </el-form-item>
 
-        <el-form-item label="实际单价(元/kg)">
+        <el-form-item label="实际单价(元/kg)" v-if="!isAdmin">
           <el-input :value="actualUnitPrice" :disabled="true" />
         </el-form-item>
 
