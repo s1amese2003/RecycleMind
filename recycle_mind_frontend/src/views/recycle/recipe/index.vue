@@ -86,7 +86,7 @@
                 <el-option
                   v-for="item in allWasteMaterials"
                   :key="item.id"
-                  :label="item.name"
+                  :label="item.name + ' (库存: ' + item.stock_kg + ' kg)'"
                   :value="item.id"
                 />
               </el-select>
@@ -103,7 +103,7 @@
                 <el-option
                   v-for="item in allWasteMaterials"
                   :key="item.id"
-                  :label="item.name"
+                  :label="item.name + ' (库存: ' + item.stock_kg + ' kg)'"
                   :value="item.id"
                 />
               </el-select>
@@ -499,7 +499,8 @@ export default {
               }, {}),
               excluded_ids: this.excludedMaterials,
               must_select_ids: this.mustSelectMaterials,
-              enable_safety_margin: false // 禁用安全余量
+              enable_safety_margin: this.enableSafetyMargin, // 传递安全余量状态
+              target_amount: this.targetAmount // 传递目标产量
           }
           const { data } = await calculateRecipe(payload)
           this.recipeResult = data

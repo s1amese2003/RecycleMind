@@ -685,12 +685,15 @@ app.get('/api/user/list', async (req, res) => {
  * POST /api/recipe/calculate
  */
 app.post('/api/recipe/calculate', async (req, res) => {
-    const { requirements, excluded_ids, must_select_ids, enable_safety_margin } = req.body;
-    console.log('接收到配方计算请求:', { requirements, excluded_ids, must_select_ids, enable_safety_margin });
+    const { requirements, excluded_ids, must_select_ids, enable_safety_margin, target_amount } = req.body;
+    console.log('接收到配方计算请求:', { requirements, excluded_ids, must_select_ids, enable_safety_margin, target_amount });
 
     if (!requirements || Object.keys(requirements).length === 0) {
         return res.status(400).json({ code: 40001, message: '产品需求参数不能为空。' });
     }
+
+    // 确保 target_amount 是有效数字，默认为1，因为配方计算是基于1kg成品的
+    const finalTargetAmount = parseFloat(target_amount) || 1;
 
     try {
         // 1. 从数据库获取所有废料信息 (包括实际单价)
@@ -722,10 +725,12 @@ app.post('/api/recipe/calculate', async (req, res) => {
             variables: {},
         };
 
-        // 2.1 约束: 每种废料的使用量不能超过其库存
+        // 2.1 约束: 每种废料的使用量不能超过其库存 (转换为1kg成品所需的量)
         wasteMaterials.forEach(material => {
             const variableName = `mat_${material.id}`; // 变量代表该原料的使用重量(kg)
-            model.constraints[`stock_${material.id}`] = { max: material.stock_kg };
+            // 注意：这里的 max 约束是基于 1kg 成品的需求，所以需要将总库存除以目标产量
+            // 以确保计算出的每公斤成品所需原料量在放大后不超过总库存
+            model.constraints[`stock_${material.id}`] = { max: material.stock_kg / finalTargetAmount };
         });
 
         // 2.2 约束: 总产出量为1kg (所有计算都归一化到1kg成品)
