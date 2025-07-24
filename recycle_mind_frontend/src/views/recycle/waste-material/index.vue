@@ -35,7 +35,7 @@
       highlight-current-row
       style="width: 100%;"
     >
-      <el-table-column label="废料编号" prop="id" align="center" width="100" />
+      <el-table-column label="废料编号" prop="id" align="center" width="100" v-if="false" />
 
       <el-table-column label="废料名称" min-width="150px">
         <template slot-scope="{row}">
@@ -305,6 +305,7 @@ export default {
     getList() {
       this.listLoading = true
       getWasteMaterialList(this.listQuery).then(response => {
+        console.log("获取废料列表响应数据:", response.data.items); // 添加这行日志
         this.list = response.data.items.map(item => {
           if (item.composition && typeof item.composition === 'string') {
             item.composition = JSON.parse(item.composition)
@@ -387,6 +388,8 @@ export default {
       })
     },
     handleDelete(row, index) {
+      console.log("尝试删除废料:", row); // 添加这行日志
+      console.log("删除废料ID:", row.id); // 添加这行日志
       this.$confirm('确定要删除这个废料吗？', '警告', {
         confirmButtonText: '确定',
         cancelButtonText: '取消',
@@ -394,7 +397,7 @@ export default {
       }).then(async() => {
         try {
           await deleteWasteMaterial(row.id)
-          this.list.splice(index, 1)
+          this.getList() // 添加这行，重新加载列表
           this.$notify({
             title: '成功',
             message: '删除成功',
@@ -460,6 +463,13 @@ export default {
           if (this.isSuperAdmin) {
             tHeader.splice(4, 0, '单价(元/kg)', '实际单价(元/kg)');
             filterVal.splice(4, 0, 'unit_price', 'actual_unit_price');
+          }
+
+          // 移除废料编号列
+          const idIndex = tHeader.indexOf('废料编号');
+          if (idIndex > -1) {
+            tHeader.splice(idIndex, 1);
+            filterVal.splice(idIndex, 1);
           }
 
           const data = this.formatJson(filterVal, this.list)

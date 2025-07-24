@@ -239,6 +239,7 @@ app.delete('/api/waste-material/:id', async (req, res) => {
   console.log(`接收到删除废料 ${id} 的请求`);
   try {
     const [result] = await db.query('DELETE FROM waste_materials WHERE id = ?', [id]);
+    console.log(`删除废料 ${id} 的数据库操作结果:`, result); // 添加这行日志
     if (result.affectedRows === 0) {
       return res.status(404).json({ code: 40401, message: '未找到指定ID的废料。' });
     }
