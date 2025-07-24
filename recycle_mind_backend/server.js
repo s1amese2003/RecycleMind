@@ -246,9 +246,13 @@ app.put('/api/waste-material/:id', authenticateToken, async (req, res) => {
  * POST /api/waste-material
  */
 app.post('/api/waste-material', authenticateToken, async (req, res) => {
-  const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
+  const { name, storage_area, composition, stock_kg } = req.body;
+  // 确保 unit_price 和 yield_rate 默认为 0，如果前端没有提供
+  const unit_price = req.body.unit_price !== undefined ? req.body.unit_price : 0;
+  const yield_rate = req.body.yield_rate !== undefined ? req.body.yield_rate : 0;
+
   const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
-  console.log('接收到新增废料请求:', { name });
+  console.log('接收到新增废料请求:', { name, unit_price, yield_rate }); // 添加日志，显示 unit_price 和 yield_rate
   try {
     const [result] = await db.query(
       'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price, yield_rate, actual_unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -256,10 +260,10 @@ app.post('/api/waste-material', authenticateToken, async (req, res) => {
     );
     res.status(201).json({
       code: 20000,
-      data: { id: result.insertId, ...req.body, actual_unit_price }
+      data: { id: result.insertId, ...req.body, unit_price, yield_rate, actual_unit_price } // 确保返回正确的 unit_price 和 yield_rate
     });
   } catch (error) {
-    console.error('新增废料 API 数据库操作出错:', error); // 修改这行，打印完整的 error 对象
+    console.error('新增废料 API 数据库操作出错:', error);
     res.status(500).json({ code: 50000, message: '服务器内部错误，新增废料失败。' });
   }
 });

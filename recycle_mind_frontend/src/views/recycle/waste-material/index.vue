@@ -30,7 +30,7 @@
         type="success"
         icon="el-icon-upload2"
         @click="handleImportClick"
-        v-if="isSuperAdmin"
+        v-if="isSuperAdmin || isAdmin"
       >
         导入
       </el-button>
@@ -41,7 +41,7 @@
         icon="el-icon-delete"
         @click="handleBatchDelete"
         :disabled="selectedWasteMaterials.length === 0"
-        v-if="isSuperAdmin"
+        v-if="isSuperAdmin || isAdmin"
       >
         批量删除
       </el-button>
@@ -51,7 +51,7 @@
         type="danger"
         icon="el-icon-delete"
         @click="handleDeleteAll"
-        v-if="isSuperAdmin"
+        v-if="isSuperAdmin || isAdmin"
         style="margin-left: 10px;"
       >
         删除所有
@@ -138,7 +138,7 @@
           <el-button size="mini" type="success" @click="handleStock(row)" v-if="!isApprover">
             库存变更
           </el-button>
-          <el-button size="mini" type="danger" @click="handleDelete(row, index)" v-if="!isApprover && isSuperAdmin">
+          <el-button size="mini" type="danger" @click="handleDelete(row, index)" v-if="!isApprover && (isSuperAdmin || isAdmin)">
             删除
           </el-button>
         </template>
@@ -630,12 +630,18 @@ export default {
         const wasteMaterial = {
           name: item['废料名称'],
           storage_area: item['存放区域'],
-          stock_kg: item['库存(kg)'], // 修改为方括号访问
-          unit_price: item['单价(元/kg)'], // 修改为方括号访问
-          yield_rate: item['出水率(%)'], // 修改为方括号访问
-          // 实际单价不需要从 Excel 中导入，因为它是根据单价和出水率计算的
-          composition: elementsToComposition(this.compositionToElements(item['成分构成'])) // 修改为方括号访问
+          stock_kg: item['库存(kg)'],
+          composition: elementsToComposition(this.compositionToElements(item['成分构成']))
         };
+
+        // 根据角色判断是否导入单价和出水率
+        if (this.isSuperAdmin) {
+          wasteMaterial.unit_price = item['单价(元/kg)'];
+          wasteMaterial.yield_rate = item['出水率(%)'];
+        } else if (this.isAdmin) {
+          wasteMaterial.unit_price = 0; // 管理员导入时，单价默认为0
+          wasteMaterial.yield_rate = item['出水率(%)']; // 出水率仍然可以导入，如果Excel中有
+        }
         return wasteMaterial;
       });
 
