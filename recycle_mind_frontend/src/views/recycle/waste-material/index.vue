@@ -24,6 +24,38 @@
       <el-button v-waves :loading="downloadLoading" class="filter-item" type="primary" icon="el-icon-download" @click="handleDownload">
         导出
       </el-button>
+      <el-button
+        class="filter-item"
+        style="margin-left: 10px;"
+        type="success"
+        icon="el-icon-upload2"
+        @click="handleImportClick"
+        v-if="isSuperAdmin"
+      >
+        导入
+      </el-button>
+      <el-button
+        v-waves
+        class="filter-item"
+        type="danger"
+        icon="el-icon-delete"
+        @click="handleBatchDelete"
+        :disabled="selectedWasteMaterials.length === 0"
+        v-if="isSuperAdmin"
+      >
+        批量删除
+      </el-button>
+      <el-button
+        v-waves
+        class="filter-item"
+        type="danger"
+        icon="el-icon-delete"
+        @click="handleDeleteAll"
+        v-if="isSuperAdmin"
+        style="margin-left: 10px;"
+      >
+        删除所有
+      </el-button>
     </div>
 
     <el-table
@@ -34,7 +66,13 @@
       fit
       highlight-current-row
       style="width: 100%;"
+      @selection-change="handleSelectionChange"
+      ref="multipleTable"
     >
+      <el-table-column
+        type="selection"
+        width="55">
+      </el-table-column>
       <el-table-column label="废料编号" prop="id" align="center" width="100" v-if="false" />
 
       <el-table-column label="废料名称" min-width="150px">
@@ -70,7 +108,9 @@
 
       <el-table-column label="实际单价" width="120px" align="center" v-if="!isAdmin && !isApprover">
         <template slot-scope="{row}">
-          <span v-if="row.actual_unit_price !== null && row.actual_unit_price !== undefined">{{ row.actual_unit_price.toFixed(2) }} 元/kg</span>
+          <span v-if="row.actual_unit_price !== null && row.actual_unit_price !== undefined">
+            {{ parseFloat(row.actual_unit_price || 0).toFixed(2) }} 元/kg
+          </span>
           <span v-else>--</span>
         </template>
       </el-table-column>
@@ -112,6 +152,34 @@
       :limit.sync="listQuery.limit"
       @pagination="getList"
     />
+
+    <!-- 导入废料对话框 -->
+    <el-dialog title="导入废料" :visible.sync="importDialogVisible" width="600px">
+      <el-upload
+        class="upload-demo"
+        drag
+        action="#"
+        :show-file-list="false"
+        :before-upload="beforeUpload"
+        :http-request="handleReadExcel"
+        accept=".xlsx, .xls"
+      >
+        <i class="el-icon-upload"></i>
+        <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
+        <div class="el-upload__tip" slot="tip">只能上传 xls/xlsx 文件</div>
+      </el-upload>
+      <div v-if="excelData.length > 0" style="margin-top: 20px;">
+        <el-alert
+          :title="`已读取 ${excelData.length} 条数据，请确认。`"
+          type="success"
+          show-icon
+          :closable="false"
+        ></el-alert>
+        <el-button type="primary" style="margin-top: 10px;" @click="uploadExcelData">
+          确认导入
+        </el-button>
+      </div>
+    </el-dialog>
 
     <!-- 废料编辑/新增对话框 -->
     <el-dialog :title="dialogStatus === 'create' ? '添加废料' : '编辑废料'" :visible.sync="dialogFormVisible">
@@ -218,7 +286,8 @@
 <script>
 import waves from '@/directive/waves' // waves directive
 import Pagination from '@/components/Pagination' // secondary package based on el-pagination
-import { getWasteMaterialList, createWasteMaterial, updateWasteMaterial, deleteWasteMaterial } from '@/api/waste-material'
+import { getWasteMaterialList, createWasteMaterial, updateWasteMaterial, deleteWasteMaterial, importWasteMaterials, batchDeleteWasteMaterials, deleteAllWasteMaterials } from '@/api/waste-material'
+import * as XLSX from 'xlsx' // 导入 XLSX 库
 
 const standardElements = ['Si', 'Fe', 'Cu', 'Mn', 'Mg', 'Cr', 'Zn', 'Ti', 'Ni', 'Zr', 'Sr', 'Na', 'Bi', 'Pb', 'B', 'AL'];
 
@@ -292,7 +361,10 @@ export default {
       rules: {
         name: [{ required: true, message: '请输入废料名称', trigger: 'blur' }],
         storage_area: [{ required: true, message: '请输入存放区域', trigger: 'blur' }]
-      }
+      },
+      importDialogVisible: false,
+      excelData: [],
+      selectedWasteMaterials: [] // 新增：用于存储选中的废料
     }
   },
   activated() {
@@ -397,7 +469,8 @@ export default {
       }).then(async() => {
         try {
           await deleteWasteMaterial(row.id)
-          this.getList() // 添加这行，重新加载列表
+          // 确保 getList() 完成后再显示成功通知
+          await this.getList() // 确保这里的 await
           this.$notify({
             title: '成功',
             message: '删除成功',
@@ -494,10 +567,20 @@ export default {
       }))
     },
     compositionToElements(composition) {
-      if (composition && typeof composition === 'object') {
+      let parsedComposition = composition;
+      if (typeof composition === 'string') {
+        try {
+          parsedComposition = JSON.parse(composition);
+        } catch (e) {
+          console.error("解析成分构成JSON字符串失败:", e);
+          return []; // 解析失败返回空数组
+        }
+      }
+
+      if (parsedComposition && typeof parsedComposition === 'object') {
         return standardElements.map(name => ({
           name,
-          percentage: composition[name] || 0
+          percentage: parsedComposition[name] || 0
         }))
       }
       return []
@@ -508,6 +591,152 @@ export default {
       tempData.actual_unit_price = this.actualUnitPrice
       delete tempData.elements
       return tempData
+    },
+    handleImportClick() {
+      this.importDialogVisible = true
+      this.excelData = [] // Clear previous data
+    },
+    beforeUpload(file) {
+      const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.type === 'application/vnd.ms-excel';
+      if (!isExcel) {
+        this.$message.error('只能上传 xls/xlsx 文件!');
+      }
+      return isExcel;
+    },
+    handleReadExcel(options) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const workbook = XLSX.read(event.target.result, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const data = XLSX.utils.sheet_to_json(worksheet);
+          console.log("Excel 解析后的原始数据:", data[0]); // 添加这行日志，打印第一个对象，查看键名
+          this.excelData = data;
+        } catch (e) {
+          this.$message.error('导入失败，请检查文件格式或内容！');
+          console.error(e);
+        }
+      };
+      reader.readAsArrayBuffer(options.file);
+    },
+    async uploadExcelData() { // 将这里修改为 async
+      if (this.excelData.length === 0) {
+        this.$message.warning('请先导入Excel文件！');
+        return;
+      }
+
+      const wasteMaterials = this.excelData.map(item => {
+        const wasteMaterial = {
+          name: item['废料名称'],
+          storage_area: item['存放区域'],
+          stock_kg: item['库存(kg)'], // 修改为方括号访问
+          unit_price: item['单价(元/kg)'], // 修改为方括号访问
+          yield_rate: item['出水率(%)'], // 修改为方括号访问
+          // 实际单价不需要从 Excel 中导入，因为它是根据单价和出水率计算的
+          composition: elementsToComposition(this.compositionToElements(item['成分构成'])) // 修改为方括号访问
+        };
+        return wasteMaterial;
+      });
+
+      let successCount = 0;
+      let failedCount = 0;
+      const failedItems = [];
+
+      const results = await Promise.allSettled(wasteMaterials.map(wasteMaterial => createWasteMaterial(wasteMaterial)));
+
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          successCount++;
+        } else {
+          failedCount++;
+          failedItems.push({
+            name: wasteMaterials[index].name,
+            error: result.reason ? result.reason.message : '未知错误'
+          });
+        }
+      });
+
+      this.$message({
+        type: 'success',
+        message: `导入成功 ${successCount} 条，失败 ${failedCount} 条。`
+      });
+      this.importDialogVisible = false;
+      this.excelData = [];
+      await this.getList(); // 确保获取到最新数据
+      await this.$nextTick(); // 等待 Vue 完成 DOM 更新
+    },
+    handleSelectionChange(val) {
+      this.selectedWasteMaterials = val;
+    },
+    async handleBatchDelete() {
+      if (this.selectedWasteMaterials.length === 0) {
+        this.$message.warning('请选择要删除的废料！');
+        return;
+      }
+
+      this.$confirm(`确定要删除选中的 ${this.selectedWasteMaterials.length} 条废料吗？`, '警告', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }).then(async() => {
+        try {
+          const ids = this.selectedWasteMaterials.map(item => item.id);
+          // await Promise.all(ids.map(id => deleteWasteMaterial(id))); // 移除这行
+          await batchDeleteWasteMaterials(ids); // 调用新的批量删除 API
+          this.$message({
+            type: 'success',
+            message: `成功删除 ${ids.length} 条废料！`,
+            duration: 2000
+          });
+          this.getList();
+          this.selectedWasteMaterials = [];
+        } catch (error) {
+          this.$message({
+            type: 'error',
+            message: '批量删除失败！',
+            duration: 2000
+          });
+          console.error(error);
+        }
+      }).catch(() => {
+        // 用户取消删除
+      });
+    },
+    async handleDeleteAll() {
+      this.$confirm('确定要删除所有废料吗？此操作不可逆，请再次确认！', '警告', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }).then(() => {
+        this.$confirm('您已选择删除所有废料，再次确认，所有数据将永久删除！', '最终警告', {
+          confirmButtonText: '我确定删除',
+          cancelButtonText: '取消',
+          type: 'error'
+        }).then(async () => {
+          try {
+            await deleteAllWasteMaterials();
+            this.$message({
+              type: 'success',
+              message: '所有废料已成功删除！',
+              duration: 2000
+            });
+            this.getList();
+            this.selectedWasteMaterials = [];
+          } catch (error) {
+            this.$message({
+              type: 'error',
+              message: '删除所有废料失败！',
+              duration: 2000
+            });
+            console.error(error);
+          }
+        }).catch(() => {
+          this.$message.info('操作已取消。');
+        });
+      }).catch(() => {
+        this.$message.info('操作已取消。');
+      });
     }
   }
 }

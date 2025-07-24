@@ -49,4 +49,38 @@ export function deleteWasteMaterial(id) {
   })
 }
 
+/**
+ * 批量导入废料
+ * @param {Array} data - 废料数据数组
+ */
+export function importWasteMaterials(data) {
+  return request({
+    url: '/waste-material/import',
+    method: 'post',
+    data
+  })
+}
+
+/**
+ * 批量删除废料
+ * @param {Array<number>} ids - 废料ID数组
+ */
+export function batchDeleteWasteMaterials(ids) {
+  return request({
+    url: '/waste-material/batch',
+    method: 'delete',
+    data: { ids } // 将ID数组作为请求体发送
+  })
+}
+
+/**
+ * 删除所有废料
+ */
+export function deleteAllWasteMaterials() {
+  return request({
+    url: '/waste-material/all',
+    method: 'delete'
+  })
+}
+
 // 注意：这里我们使用了命名导出 `export function`，而不是 `export default`

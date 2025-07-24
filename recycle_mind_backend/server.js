@@ -138,71 +138,82 @@ app.use('/api/production', authenticateToken);
 app.use('/api/user-manage', authenticateToken); // 如果有用户管理接口，也加上
 
 // --- 废料管理 API ---
+
 /**
- * 获取废料列表
- * GET /api/waste-material/list
+ * 删除所有废料
+ * DELETE /api/waste-material/all
  */
-app.get('/api/waste-material/list', async (req, res) => {
-  const { keyword, page = 1, limit = 20 } = req.query;
-  console.log('接收到获取废料列表的请求, query:', req.query);
-
+app.delete('/api/waste-material/all', authenticateToken, async (req, res) => {
+  console.log('接收到删除所有废料的请求');
+  const connection = await db.getConnection();
   try {
-    let whereClause = '';
-    const queryParams = [];
-
-    if (keyword) {
-      whereClause = 'WHERE name LIKE ? OR storage_area LIKE ?';
-      queryParams.push(`%${keyword}%`);
-      queryParams.push(`%${keyword}%`);
-    }
-
-    // Get total count
-    const countQuery = `SELECT COUNT(*) as total FROM waste_materials ${whereClause}`;
-    const [countRows] = await db.query(countQuery, queryParams);
-    const total = countRows[0].total;
-
-    // Get paginated data
-    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-    const dataQuery = `SELECT * FROM waste_materials ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`;
-    const dataParams = [...queryParams, parseInt(limit, 10), offset];
-    
-    const [rows] = await db.query(dataQuery, dataParams);
-
-    const items = rows.map(item => ({
-        ...item,
-        stock: item.stock_kg
-    }));
-
-    res.json({
-      code: 20000,
-      data: { items: items, total: total }
-    });
+    await connection.beginTransaction();
+    const [result] = await connection.query('DELETE FROM waste_materials');
+    await connection.commit();
+    res.json({ code: 20000, data: { message: `成功删除 ${result.affectedRows} 条废料。` } });
   } catch (error) {
-    console.error('获取废料列表 API 查询数据库时出错:', error);
-    res.status(500).json({ code: 50000, message: '服务器内部错误，获取废料列表失败。' });
+    await connection.rollback();
+    console.error('删除所有废料 API 数据库操作出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，删除所有废料失败。' });
+  } finally {
+    connection.release();
   }
 });
 
 /**
- * 新增废料
- * POST /api/waste-material
+ * 批量删除废料
+ * DELETE /api/waste-material/batch
  */
-app.post('/api/waste-material', async (req, res) => {
-  const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
-  const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
-  console.log('接收到新增废料请求:', { name });
+app.delete('/api/waste-material/batch', authenticateToken, async (req, res) => {
+  const { ids } = req.body; // 接收包含 ID 的数组
+  console.log(`接收到批量删除废料的请求，IDs:`, ids);
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ code: 40001, message: '请求体中废料 ID 数组为空或格式不正确。' });
+  }
+
+  // 构建 SQL 查询，使用 IN 子句进行批量删除
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `DELETE FROM waste_materials WHERE id IN (${placeholders})`;
+
+  const connection = await db.getConnection();
   try {
-    const [result] = await db.query(
-      'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price, yield_rate, actual_unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price, yield_rate, actual_unit_price]
-    );
-    res.status(201).json({
-      code: 20000,
-      data: { id: result.insertId, ...req.body, actual_unit_price }
-    });
+    await connection.beginTransaction();
+
+    const [result] = await connection.query(sql, ids);
+    if (result.affectedRows === 0) {
+      console.warn('批量删除操作 affectedRows 为 0，可能部分或全部ID不存在。');
+    }
+
+    await connection.commit();
+    res.json({ code: 20000, data: { message: `成功删除 ${result.affectedRows} 条废料。` } });
+
   } catch (error) {
-    console.error('新增废料 API 数据库操作出错:', error);
-    res.status(500).json({ code: 50000, message: '服务器内部错误，新增废料失败。' });
+    await connection.rollback();
+    console.error('批量删除废料 API 数据库操作出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，批量删除失败。' });
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * 删除废料
+ * DELETE /api/waste-material/:id
+ */
+app.delete('/api/waste-material/:id', async (req, res) => {
+  const { id } = req.params;
+  console.log(`接收到删除废料 ${id} 的请求`);
+  try {
+    const [result] = await db.query('DELETE FROM waste_materials WHERE id = ?', [id]);
+    console.log(`删除废料 ${id} 的数据库操作结果:`, result);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ code: 40401, message: '未找到指定ID的废料。' });
+    }
+    res.json({ code: 20000, data: 'success' });
+  } catch (error) {
+    console.error(`删除废料 ${id} API 数据库操作出错:`, error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，删除废料失败。' });
   }
 });
 
@@ -210,7 +221,7 @@ app.post('/api/waste-material', async (req, res) => {
  * 修改废料
  * PUT /api/waste-material/:id
  */
-app.put('/api/waste-material/:id', async (req, res) => {
+app.put('/api/waste-material/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
   const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
@@ -231,22 +242,136 @@ app.put('/api/waste-material/:id', async (req, res) => {
 });
 
 /**
- * 删除废料
- * DELETE /api/waste-material/:id
+ * 新增废料
+ * POST /api/waste-material
  */
-app.delete('/api/waste-material/:id', async (req, res) => {
-  const { id } = req.params;
-  console.log(`接收到删除废料 ${id} 的请求`);
+app.post('/api/waste-material', authenticateToken, async (req, res) => {
+  const { name, storage_area, composition, stock_kg, unit_price, yield_rate } = req.body;
+  const actual_unit_price = (unit_price && yield_rate) ? unit_price / (yield_rate / 100) : 0;
+  console.log('接收到新增废料请求:', { name });
   try {
-    const [result] = await db.query('DELETE FROM waste_materials WHERE id = ?', [id]);
-    console.log(`删除废料 ${id} 的数据库操作结果:`, result); // 添加这行日志
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ code: 40401, message: '未找到指定ID的废料。' });
-    }
-    res.json({ code: 20000, data: 'success' });
+    const [result] = await db.query(
+      'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price, yield_rate, actual_unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [name, storage_area, JSON.stringify(composition), stock_kg, unit_price, yield_rate, actual_unit_price]
+    );
+    res.status(201).json({
+      code: 20000,
+      data: { id: result.insertId, ...req.body, actual_unit_price }
+    });
   } catch (error) {
-    console.error(`删除废料 ${id} API 数据库操作出错:`, error);
-    res.status(500).json({ code: 50000, message: '服务器内部错误，删除废料失败。' });
+    console.error('新增废料 API 数据库操作出错:', error); // 修改这行，打印完整的 error 对象
+    res.status(500).json({ code: 50000, message: '服务器内部错误，新增废料失败。' });
+  }
+});
+
+/**
+ * 批量导入废料
+ * POST /api/waste-material/import
+ */
+app.post('/api/waste-material/import', authenticateToken, async (req, res) => {
+  const wasteMaterials = req.body; // 接收前端发送的废料数组
+  console.log(`接收到批量导入废料的请求，共 ${wasteMaterials.length} 条`);
+
+  if (!Array.isArray(wasteMaterials) || wasteMaterials.length === 0) {
+    return res.status(400).json({ code: 40001, message: '请求体中废料数据为空或格式不正确。' });
+  }
+
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    let successCount = 0;
+    let failedItems = [];
+
+    for (const item of wasteMaterials) {
+      try {
+        const { name, storage_area, stock_kg, unit_price, yield_rate, composition } = item;
+        const actual_unit_price = (unit_price && yield_rate) ? parseFloat(unit_price) / (parseFloat(yield_rate) / 100) : 0;
+
+        let parsedComposition = null;
+        if (composition && typeof composition === 'string') {
+          try {
+            parsedComposition = JSON.parse(composition);
+          } catch (jsonError) {
+            console.warn(`废料 ${name} 的成分构成解析失败:`, jsonError.message);
+            failedItems.push({ name, error: `成分构成格式无效: ${jsonError.message}` });
+            continue;
+          }
+        }
+
+        const [result] = await connection.query(
+          'INSERT INTO waste_materials (name, storage_area, composition, stock_kg, unit_price, yield_rate, actual_unit_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [name, storage_area, JSON.stringify(parsedComposition), stock_kg, unit_price, yield_rate, actual_unit_price]
+        );
+        if (result.affectedRows > 0) {
+          successCount++;
+        }
+      } catch (error) {
+        console.error(`导入废料时出错 - ${item.name}:`, error);
+        failedItems.push({ name: item.name, error: error.message });
+      }
+    }
+
+    await connection.commit();
+    res.json({
+      code: 20000,
+      data: {
+        successCount,
+        failedCount: failedItems.length,
+        failedItems,
+        message: `成功导入 ${successCount} 条废料，${failedItems.length} 条导入失败。`
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('批量导入废料 API 数据库事务出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，批量导入失败。' });
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * 获取废料列表
+ * GET /api/waste-material/list
+ */
+app.get('/api/waste-material/list', authenticateToken, async (req, res) => {
+  const { keyword, page = 1, limit = 20 } = req.query;
+  console.log('接收到获取废料列表的请求, query:', req.query);
+
+  try {
+    let whereClause = '';
+    const queryParams = [];
+
+    if (keyword) {
+      whereClause = 'WHERE name LIKE ? OR storage_area LIKE ?';
+      queryParams.push(`%${keyword}%`);
+      queryParams.push(`%${keyword}%`);
+    }
+
+    const countQuery = `SELECT COUNT(*) as total FROM waste_materials ${whereClause}`;
+    const [countRows] = await db.query(countQuery, queryParams);
+    const total = countRows[0].total;
+
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const dataQuery = `SELECT * FROM waste_materials ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`;
+    const dataParams = [...queryParams, parseInt(limit, 10), offset];
+    
+    const [rows] = await db.query(dataQuery, dataParams);
+
+    const items = rows.map(item => ({
+        ...item,
+        stock: item.stock_kg
+    }));
+
+    res.json({
+      code: 20000,
+      data: { items: items, total: total }
+    });
+  } catch (error) {
+    console.error('获取废料列表 API 查询数据库时出错:', error);
+    res.status(500).json({ code: 50000, message: '服务器内部错误，获取废料列表失败。' });
   }
 });
 
