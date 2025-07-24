@@ -177,11 +177,13 @@
               show-summary
               :summary-method="getSummaries"
             >
-              <el-table-column
-                label="废料名称"
-                prop="name"
-                min-width="150"
-              />
+              <el-table-column label="计划ID" prop="id" align="center" width="120" v-if="false">
+                <template slot-scope="{ row }">
+                  <span>{{ row.id }}</span>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="废料名称" prop="name" min-width="150" />
               <el-table-column
                 label="存放区域"
                 prop="storage_area"

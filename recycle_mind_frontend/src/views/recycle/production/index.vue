@@ -34,7 +34,6 @@
             </el-card>
           </template>
         </el-table-column>
-        <el-table-column prop="id" label="计划ID" width="180" />
         <el-table-column prop="product_name" label="成品名称" />
         <el-table-column prop="actual_amount" label="计划产量 (kg)" />
         <el-table-column label="实际产量 (kg)" width="140">
