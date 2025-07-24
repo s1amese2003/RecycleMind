@@ -10,7 +10,7 @@ const recycleRouter = {
   meta: {
     title: '废料回收管理',
     icon: 'tree',
-    roles: ['admin', 'operator'] // 设置角色权限
+    roles: ['admin', 'operator', 'superadmin'] // 设置角色权限
   },
   children: [
     {

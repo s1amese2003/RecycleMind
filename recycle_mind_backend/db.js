@@ -2,9 +2,9 @@ const mysql = require('mysql2/promise');
 
 // 创建数据库连接池
 const pool = mysql.createPool({
-  host: '39.106.228.80',
+  host: '59.110.213.189',
   user: 'root',
-  password: 'Test@114514',
+  password: 'Lfh@114514',
   database: 'recycle_mind',
   waitForConnections: true,
   connectionLimit: 10,

@@ -728,21 +728,21 @@ app.get('/api/user/list', async (req, res) => {
 
 /**
  * 新增用户 (密码不加密)
- * POST /api/user
+ * POST /api/users
  */
-app.post('/api/user', async (req, res) => {
+app.post('/api/users', async (req, res) => {
   const { username, password, role } = req.body;
-  console.log('接收到创建用户请求:', { username });
+  console.log('接收到新增用户请求:', { username, role });
 
   if (!username || !password || !role) {
     return res.status(400).json({ code: 40000, message: '用户名、密码和角色不能为空。' });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // const hashedPassword = await bcrypt.hash(password, 10); // 移除此行，不再对密码加密
     const [result] = await db.query(
       'INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-      [username, hashedPassword, role]
+      [username, password, role] // 直接使用原始密码
     );
     const newUser = {
       id: result.insertId,
@@ -772,16 +772,30 @@ app.put('/api/user/:id', async (req, res) => {
   console.log(`接收到更新用户 ${id} 请求:`, { username, role });
 
   try {
-    let query = 'UPDATE users SET username = ?, role = ?';
-    const params = [username, role];
+    let queryParts = [];
+    const params = [];
+
+    if (username !== undefined && username !== null) { // 只有当username有值时才更新
+      queryParts.push('username = ?');
+      params.push(username);
+    }
+    
+    if (role !== undefined && role !== null) { // 只有当role有值时才更新
+      queryParts.push('role = ?');
+      params.push(role);
+    }
 
     if (password) {
       const hashedPassword = await bcrypt.hash(password, 10);
-      query += ', password = ?';
+      queryParts.push('password = ?');
       params.push(hashedPassword);
     }
 
-    query += ' WHERE id = ?';
+    if (queryParts.length === 0) {
+      return res.status(400).json({ code: 40002, message: '没有提供要更新的字段。' });
+    }
+
+    let query = 'UPDATE users SET ' + queryParts.join(', ') + ' WHERE id = ?';
     params.push(id);
 
     const [result] = await db.query(query, params);

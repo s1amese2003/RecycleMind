@@ -10,7 +10,7 @@ export function getUsers(params) {
 
 export function addUser(data) {
   return request({
-    url: '/user',
+    url: '/users',
     method: 'post',
     data
   })
@@ -18,7 +18,7 @@ export function addUser(data) {
 
 export function updateUser(id, data) {
   return request({
-    url: `/user/${id}`,
+    url: `/users/${id}`,
     method: 'put',
     data
   })
@@ -26,7 +26,7 @@ export function updateUser(id, data) {
 
 export function deleteUser(id) {
   return request({
-    url: `/user/${id}`,
+    url: `/users/${id}`,
     method: 'delete'
   })
 }
