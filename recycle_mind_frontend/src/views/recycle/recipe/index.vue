@@ -449,7 +449,7 @@ export default {
         this.editableRecipe.forEach(item => {
           const materialDetails = this.allWasteMaterials.find(m => m.id === item.id);
           item.percentage = (item.actual_amount / totalAmount) * 100;
-          item.cost = item.actual_amount * (parseFloat(materialDetails.unit_price) || 0);
+          item.cost = item.actual_amount * (parseFloat(materialDetails?.unit_price) || 0);
         });
       }
     },
@@ -579,7 +579,7 @@ export default {
           ...item,
           // 根据目标产量，等比放大各项数值
           actual_amount: parseFloat(actual_amount.toFixed(2)),
-          cost: actual_amount * (parseFloat(materialDetails.unit_price) || 0)
+          cost: actual_amount * (parseFloat(materialDetails?.unit_price) || 0)
         };
       });
     },
