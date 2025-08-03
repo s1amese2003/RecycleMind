@@ -1237,12 +1237,50 @@ app.post('/api/production/record/:id/approve', async (req, res) => {
             throw new Error('配方数据丢失或已损坏，无法批准。');
         }
 
+        // 详细记录原始数据以便调试
+        console.log(`原始配方数据 (ID: ${id}):`, record.materials_used);
+        console.log(`数据类型:`, typeof record.materials_used);
+        console.log(`数据长度:`, record.materials_used.length);
+
         let materialsUsed;
         try {
-            materialsUsed = JSON.parse(record.materials_used);
+            // 检查是否已经是对象类型
+            if (typeof record.materials_used === 'object' && record.materials_used !== null) {
+                materialsUsed = record.materials_used;
+                console.log('配方数据已经是对象类型，直接使用');
+            } else if (typeof record.materials_used === 'string') {
+                // 检查是否是 "[object Object]" 这样的无效字符串
+                if (record.materials_used.startsWith('[object ') || record.materials_used === '[object Object]') {
+                    console.error(`检测到无效的对象字符串表示: ${record.materials_used}`);
+                    throw new Error('配方数据已损坏，包含无效的对象字符串表示。请重新创建生产记录。');
+                }
+
+                // 尝试解析JSON字符串
+                materialsUsed = JSON.parse(record.materials_used);
+                console.log('成功解析JSON字符串');
+            } else {
+                throw new Error(`配方数据类型不正确: ${typeof record.materials_used}`);
+            }
+
+            // 验证解析后的数据结构
+            if (!Array.isArray(materialsUsed)) {
+                throw new Error('配方数据必须是数组格式');
+            }
+
+            console.log(`成功解析配方数据，包含 ${materialsUsed.length} 项材料`);
+
         } catch (e) {
             console.error(`解析配方数据失败 (ID: ${id}):`, e);
-            throw new Error('配方数据格式错误，无法解析。');
+            console.error(`原始数据内容:`, record.materials_used);
+
+            // 提供更详细的错误信息
+            if (e.message.includes('Unexpected token')) {
+                throw new Error('配方数据格式错误：JSON格式不正确。可能需要重新创建此生产记录。');
+            } else if (e.message.includes('无效的对象字符串')) {
+                throw new Error(e.message);
+            } else {
+                throw new Error(`配方数据解析失败: ${e.message}`);
+            }
         }
 
         // 3. 检查库存并准备更新
